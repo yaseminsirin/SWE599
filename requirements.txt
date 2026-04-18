@@ -1,0 +1,8 @@
+django
+djangorestframework
+psycopg[binary]
+celery
+redis
+django-celery-beat
+python-dotenv
+requests
