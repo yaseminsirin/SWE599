@@ -4,7 +4,12 @@ from django.test import TestCase
 from django.utils import timezone
 
 from apps.jobs.models import JobPosting, RawJobRecord
-from apps.jobs.services.ingestion_pipeline import ingest_source, save_raw_record
+from apps.jobs.services.ingestion_pipeline import (
+    ingest_source,
+    prune_stale_jobs,
+    save_raw_record,
+    upsert_raw_record,
+)
 from apps.jobs.services.normalization_pipeline import normalize_raw_records_batch
 
 
@@ -19,6 +24,65 @@ class JobsPipelineTests(TestCase):
         self.assertTrue(save_raw_record(raw))
         self.assertFalse(save_raw_record(raw))
         self.assertEqual(RawJobRecord.objects.count(), 1)
+
+    def test_upsert_raw_record_updates_payload_and_resets_processed(self):
+        raw = {
+            "source": "adzuna",
+            "source_job_id": "job-1",
+            "payload": {"id": "job-1", "title": "Backend Engineer"},
+            "fetched_at": timezone.now(),
+        }
+        created, updated = upsert_raw_record(raw)
+        self.assertTrue(created)
+        self.assertFalse(updated)
+
+        record = RawJobRecord.objects.get(source="adzuna", source_job_id="job-1")
+        record.processed_at = timezone.now()
+        record.save(update_fields=["processed_at"])
+
+        created2, updated2 = upsert_raw_record(
+            {
+                **raw,
+                "payload": {"id": "job-1", "title": "Senior Backend Engineer"},
+            }
+        )
+        self.assertFalse(created2)
+        self.assertTrue(updated2)
+        record.refresh_from_db()
+        self.assertIsNone(record.processed_at)
+        self.assertEqual(RawJobRecord.objects.count(), 1)
+
+    def test_prune_stale_jobs_removes_missing_postings_and_raw(self):
+        posting = JobPosting.objects.create(
+            source="adzuna",
+            source_job_id="gone",
+            title="Old",
+            job_url="https://example.com/old",
+            content_hash="hash-gone",
+        )
+        RawJobRecord.objects.create(
+            source="adzuna",
+            source_job_id="gone",
+            payload={"id": "gone"},
+        )
+        RawJobRecord.objects.create(
+            source="adzuna",
+            source_job_id="keep",
+            payload={"id": "keep"},
+        )
+        JobPosting.objects.create(
+            source="adzuna",
+            source_job_id="keep",
+            title="Keep",
+            job_url="https://example.com/keep",
+            content_hash="hash-keep",
+        )
+
+        result = prune_stale_jobs("adzuna", {"keep"})
+        self.assertEqual(result["deleted_postings"], 1)
+        self.assertEqual(result["deleted_raw_records"], 1)
+        self.assertFalse(JobPosting.objects.filter(source_job_id="gone").exists())
+        self.assertTrue(JobPosting.objects.filter(source_job_id="keep").exists())
 
     @patch("apps.jobs.services.ingestion_pipeline.ADAPTERS")
     def test_ingest_source_returns_summary_and_stores_records(self, mock_adapters):
@@ -42,11 +106,35 @@ class JobsPipelineTests(TestCase):
                 ]
 
         mock_adapters.get.return_value = DummyAdapter
-        result = ingest_source("adzuna")
+        result = ingest_source("adzuna", sync=False)
         self.assertEqual(result["source"], "adzuna")
         self.assertEqual(result["fetched_records"], 2)
         self.assertEqual(result["created_records"], 2)
         self.assertEqual(RawJobRecord.objects.count(), 2)
+
+    @patch("apps.jobs.services.ingestion_pipeline.prune_stale_jobs")
+    @patch("apps.jobs.services.ingestion_pipeline.ADAPTERS")
+    def test_ingest_source_sync_prunes_stale_ids(self, mock_adapters, mock_prune):
+        class DummyAdapter:
+            def fetch_jobs(self, *, page, per_page):
+                if page > 1:
+                    return []
+                return [
+                    {
+                        "source": "adzuna",
+                        "source_job_id": "active-1",
+                        "payload": {"id": "active-1"},
+                        "fetched_at": timezone.now(),
+                    },
+                ]
+
+        mock_adapters.get.return_value = DummyAdapter
+        mock_prune.return_value = {"deleted_postings": 0, "deleted_raw_records": 0}
+
+        result = ingest_source("adzuna", sync=True)
+        mock_prune.assert_called_once()
+        self.assertEqual(mock_prune.call_args[0][1], {"active-1"})
+        self.assertEqual(result["active_source_job_ids"], ["active-1"])
 
     def test_normalization_creates_updates_and_dedupes(self):
         payload = {

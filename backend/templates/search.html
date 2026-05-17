@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% load static %}
+{% block title %}Search — JobSense AI{% endblock %}
+
+{% block content %}
+<h1 class="page-title">Find your next role</h1>
+<p class="page-sub">Search across aggregated listings. Switch between keyword, semantic, and smart ranking.</p>
+
+<section class="card search-card" aria-label="Job search">
+  <form id="searchForm" novalidate>
+    <div class="mode-tabs" role="tablist" aria-label="Search mode">
+      <button type="button" class="mode-tab is-active" data-mode="keyword" role="tab" aria-selected="true">
+        Keyword Search
+      </button>
+      <button type="button" class="mode-tab" data-mode="semantic" role="tab" aria-selected="false">
+        Semantic Search
+      </button>
+      <button type="button" class="mode-tab" data-mode="ranked" role="tab" aria-selected="false">
+        Smart Ranking
+      </button>
+    </div>
+
+    <div class="form-grid">
+      <div>
+        <label class="form-label" for="query">Keywords</label>
+        <input class="input" type="search" id="query" name="query" placeholder='e.g. "Python backend"' autocomplete="off" />
+      </div>
+      <div>
+        <label class="form-label" for="location">Location</label>
+        <input class="input" type="text" id="location" name="location" placeholder="City, country, or region" />
+      </div>
+      <div>
+        <label class="form-label" for="employment_type">Employment type</label>
+        <select class="select" id="employment_type" name="employment_type">
+          <option value="">Any</option>
+          <option value="full_time">Full time</option>
+          <option value="part_time">Part time</option>
+          <option value="contract">Contract</option>
+        </select>
+      </div>
+      <div class="check-row">
+        <input type="checkbox" id="is_remote" name="is_remote" />
+        <label for="is_remote"><strong>Remote only</strong></label>
+      </div>
+    </div>
+
+    <div class="search-card__actions">
+      <button type="submit" class="btn btn--primary btn--block">Search Jobs</button>
+      <p class="search-status" id="searchStatus" aria-live="polite"></p>
+    </div>
+  </form>
+</section>
+
+<section class="results-section" aria-label="Results">
+  <h2>Results</h2>
+  <div id="jobResults">
+    <div class="loading-state" id="searchInitialLoading">
+      <div class="spinner"></div>
+      <strong>Loading jobs…</strong>
+      <span>Fetching listings from the database.</span>
+    </div>
+  </div>
+  <nav class="pagination" id="jobPagination" aria-label="Job results pages" hidden></nav>
+</section>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{% static 'js/search.js' %}"></script>
+{% endblock %}

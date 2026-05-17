@@ -1,8 +1,8 @@
 from rest_framework import generics, status
-from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from .pagination import JobResultsPagination
 from .serializers import JobPostingDetailSerializer, JobPostingSerializer
 from .services.job_search import apply_job_filters, get_base_job_queryset
 from .services.ranking import rank_jobs
@@ -11,6 +11,7 @@ from .services.semantic_search import semantic_search_jobs
 
 class JobListAPIView(generics.ListAPIView):
     serializer_class = JobPostingSerializer
+    pagination_class = JobResultsPagination
 
     def get_queryset(self):
         queryset = get_base_job_queryset()
@@ -24,6 +25,7 @@ class JobDetailAPIView(generics.RetrieveAPIView):
 
 class JobSearchAPIView(generics.ListAPIView):
     serializer_class = JobPostingSerializer
+    pagination_class = JobResultsPagination
 
     def get_queryset(self):
         queryset = get_base_job_queryset()
@@ -31,7 +33,7 @@ class JobSearchAPIView(generics.ListAPIView):
 
 
 class SemanticJobSearchAPIView(APIView):
-    pagination_class = PageNumberPagination
+    pagination_class = JobResultsPagination
 
     def get(self, request):
         query = (request.query_params.get("q") or "").strip()
@@ -58,7 +60,7 @@ class SemanticJobSearchAPIView(APIView):
 
 
 class RankedJobSearchAPIView(APIView):
-    pagination_class = PageNumberPagination
+    pagination_class = JobResultsPagination
 
     def get(self, request):
         query = (request.query_params.get("keyword") or "").strip()

@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% load static %}
+{% block title %}Alerts — JobSense AI{% endblock %}
+
+{% block content %}
+<h1 class="page-title">Job alerts</h1>
+<p class="page-sub">Save filters and get notified when new jobs match.</p>
+
+<section class="card" aria-label="Create alert">
+  <h2 class="alerts-form-title">Create a new alert</h2>
+  <form id="alertForm">
+    <div class="form-grid">
+      <div>
+        <label class="form-label" for="a_notify_email">Email (optional)</label>
+        <input class="input" type="email" id="a_notify_email" placeholder="For alert notifications" />
+      </div>
+      <div>
+        <label class="form-label" for="a_keyword">Keyword</label>
+        <input class="input" type="text" id="a_keyword" placeholder="e.g. Django, data engineer" />
+      </div>
+      <div>
+        <label class="form-label" for="a_location">Location</label>
+        <input class="input" type="text" id="a_location" placeholder="Optional" />
+      </div>
+      <div>
+        <label class="form-label" for="a_employment">Employment type</label>
+        <select class="select" id="a_employment">
+          <option value="">Any</option>
+          <option value="full_time">Full time</option>
+          <option value="part_time">Part time</option>
+          <option value="contract">Contract</option>
+        </select>
+      </div>
+      <div class="check-row">
+        <input type="checkbox" id="a_remote" />
+        <label for="a_remote"><strong>Remote only</strong></label>
+      </div>
+    </div>
+    <div class="search-card__actions">
+      <button type="submit" class="btn btn--primary">Create alert</button>
+      <p class="search-status" id="alertStatus"></p>
+    </div>
+  </form>
+</section>
+
+<section class="results-section" style="margin-top: 28px;">
+  <h2>Your alerts</h2>
+  <div id="alertsList"></div>
+</section>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{% static 'js/alerts.js' %}"></script>
+{% endblock %}

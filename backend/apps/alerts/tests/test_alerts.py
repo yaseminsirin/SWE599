@@ -1,27 +1,17 @@
-from django.contrib.auth import get_user_model
 from django.urls import reverse
 from django.utils import timezone
-from rest_framework.authtoken.models import Token
 from rest_framework.test import APITestCase
 
 from apps.alerts.models import AlertDeliveryLog, JobAlert
 from apps.alerts.services.matching import process_job_alerts
 from apps.jobs.models import JobPosting
 
-User = get_user_model()
-
 
 class AlertsTests(APITestCase):
     def setUp(self):
-        self.user = User.objects.create_user(
-            username="alice",
-            email="alice@example.com",
-            password="strong-pass-123",
-        )
-        token = Token.objects.create(user=self.user)
-        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+        JobAlert.objects.all().delete()
 
-    def test_alert_crud_with_authenticated_ownership(self):
+    def test_alert_crud_without_login(self):
         create = self.client.post(
             reverse("alert-list-create"),
             {
@@ -31,6 +21,7 @@ class AlertsTests(APITestCase):
                 "is_remote": True,
                 "employment_type": "full_time",
                 "filters": {"seniority": "senior"},
+                "notify_email": "alerts@example.com",
             },
             format="json",
         )
@@ -54,9 +45,9 @@ class AlertsTests(APITestCase):
 
     def test_alert_processing_matches_and_prevents_duplicate_delivery(self):
         alert = JobAlert.objects.create(
-            user=self.user,
             keyword="python",
             is_active=True,
+            notify_email="alerts@example.com",
         )
         JobPosting.objects.create(
             source="adzuna",

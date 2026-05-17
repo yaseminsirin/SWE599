@@ -1,0 +1,28 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{% block title %}JobSense AI{% endblock %}</title>
+  <link rel="stylesheet" href="{% static 'css/app.css' %}" />
+</head>
+<body>
+  <header class="navbar">
+    <div class="navbar__inner">
+      <a href="/search/" class="navbar__brand">Job<span>Sense</span> AI</a>
+      <nav class="navbar__links" aria-label="Main">
+        <a href="/search/" class="nav-link" data-path="/search/">Search</a>
+        <a href="/alerts/" class="nav-link" data-path="/alerts/">Alerts</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="main-wrap">
+    {% block content %}{% endblock %}
+  </main>
+
+  <script src="{% static 'js/api.js' %}"></script>
+  {% block extra_js %}{% endblock %}
+</body>
+</html>

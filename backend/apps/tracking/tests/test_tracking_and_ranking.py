@@ -1,7 +1,6 @@
 from django.contrib.auth import get_user_model
 from django.urls import reverse
 from django.utils import timezone
-from rest_framework.authtoken.models import Token
 from rest_framework.test import APITestCase
 
 from apps.jobs.models import JobPosting
@@ -18,8 +17,7 @@ class TrackingAndRankingTests(APITestCase):
             email="bob@example.com",
             password="strong-pass-123",
         )
-        token = Token.objects.create(user=self.user)
-        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+        self.client.force_authenticate(user=self.user)
 
         self.job1 = JobPosting.objects.create(
             source="adzuna",

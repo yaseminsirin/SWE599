@@ -14,6 +14,10 @@ def clean_text(value: Any) -> str:
     return text
 
 
+def truncate_text(value: Any, max_len: int) -> str:
+    return clean_text(value)[:max_len]
+
+
 def parse_datetime(value: Any) -> datetime | None:
     if not value:
         return None

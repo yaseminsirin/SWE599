@@ -15,6 +15,7 @@ class JobAlertSerializer(serializers.ModelSerializer):
             "employment_type",
             "filters",
             "is_active",
+            "notify_email",
             "last_notified_at",
             "created_at",
             "updated_at",

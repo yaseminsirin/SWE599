@@ -20,13 +20,11 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     "rest_framework",
-    "rest_framework.authtoken",
     "django_celery_beat",
     "apps.jobs.apps.JobsConfig",
     "apps.search.apps.SearchConfig",
     "apps.alerts.apps.AlertsConfig",
     "apps.tracking.apps.TrackingConfig",
-    "apps.users.apps.UsersConfig",
 ]
 
 MIDDLEWARE = [
@@ -44,7 +42,7 @@ ROOT_URLCONF = "config.urls"
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
-        "DIRS": [],
+        "DIRS": [BASE_DIR / "templates"],
         "APP_DIRS": True,
         "OPTIONS": {
             "context_processors": [
@@ -92,11 +90,12 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 
 LANGUAGE_CODE = "en-us"
-TIME_ZONE = "UTC"
+TIME_ZONE = os.getenv("DJANGO_TIME_ZONE", "UTC")
 USE_I18N = True
 USE_TZ = True
 
 STATIC_URL = "static/"
+STATICFILES_DIRS = [BASE_DIR / "static"]
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
@@ -106,14 +105,29 @@ CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", REDIS_URL)
 CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
-CELERY_TIMEZONE = TIME_ZONE
+CELERY_TIMEZONE = os.getenv("INGEST_SCHEDULE_TIMEZONE", "Europe/Istanbul")
+CELERY_ENABLE_UTC = False
+
+INGEST_SCHEDULE_HOUR = int(os.getenv("INGEST_SCHEDULE_HOUR", "3"))
+INGEST_SCHEDULE_MINUTE = int(os.getenv("INGEST_SCHEDULE_MINUTE", "0"))
+
+from celery.schedules import crontab  # noqa: E402
+
+CELERY_BEAT_SCHEDULE = {
+    "nightly-job-refresh": {
+        "task": "apps.jobs.tasks.nightly_job_refresh_task",
+        "schedule": crontab(
+            hour=INGEST_SCHEDULE_HOUR,
+            minute=INGEST_SCHEDULE_MINUTE,
+        ),
+    },
+}
 
 REST_FRAMEWORK = {
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 20,
-    "DEFAULT_AUTHENTICATION_CLASSES": [
-        "rest_framework.authentication.TokenAuthentication",
-        "rest_framework.authentication.SessionAuthentication",
+    "DEFAULT_PERMISSION_CLASSES": [
+        "rest_framework.permissions.AllowAny",
     ],
 }
 
@@ -129,3 +143,4 @@ EMAIL_BACKEND = os.getenv(
     "django.core.mail.backends.console.EmailBackend",
 )
 DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "noreply@example.com")
+ALERT_DEFAULT_EMAIL = os.getenv("ALERT_DEFAULT_EMAIL", "")
