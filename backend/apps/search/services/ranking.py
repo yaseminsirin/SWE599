@@ -5,9 +5,15 @@ from django.conf import settings
 from django.db.models import Count, QuerySet
 
 from apps.jobs.models import JobPosting
+from apps.search.services.job_quality import is_quality_job
 from apps.search.models import JobEmbedding
-from apps.search.services.embeddings.factory import get_embedding_provider
-from apps.search.services.similarity import cosine_similarity
+from apps.search.services.embeddings.factory import (
+    embed_text_with_metadata,
+    is_embedding_strict_mode,
+    log_embedding_usage,
+)
+from apps.search.services.embeddings.types import EmbeddingProviderError
+from apps.search.services.vector_query import cosine_distance_annotation, semantic_score_from_row
 from apps.tracking.models import JobClickEvent
 
 
@@ -26,14 +32,26 @@ def compute_keyword_score(query: str, job: JobPosting) -> float:
     return overlap / max(len(q_tokens), 1)
 
 
-def _build_embedding_map(jobs: list[JobPosting]) -> dict[int, list[float]]:
-    provider = get_embedding_provider()
-    rows = JobEmbedding.objects.filter(
-        job__in=jobs,
-        provider=provider.provider_name,
-        model_name=provider.model_name,
+def _build_semantic_score_map(
+    jobs: list[JobPosting],
+    query_vector: list[float],
+    *,
+    provider_name: str,
+    model_name: str,
+) -> dict[int, float]:
+    if not jobs or not query_vector:
+        return {}
+
+    job_ids = [job.id for job in jobs]
+    rows = (
+        JobEmbedding.objects.filter(
+            job_id__in=job_ids,
+            provider=provider_name,
+            model_name=model_name,
+        )
+        .annotate(**cosine_distance_annotation(query_vector))
     )
-    return {row.job_id: row.embedding for row in rows}
+    return {row.job_id: semantic_score_from_row(row) for row in rows}
 
 
 def _build_click_score_map(jobs: list[JobPosting], user) -> dict[int, float]:
@@ -62,13 +80,29 @@ def _build_click_score_map(jobs: list[JobPosting], user) -> dict[int, float]:
 
 
 def rank_jobs(queryset: QuerySet[JobPosting], *, query: str, user=None, limit: int = 50) -> list[dict[str, Any]]:
-    jobs = list(queryset[:limit])
+    jobs = [job for job in queryset[: limit * 2] if is_quality_job(job)][:limit]
     if not jobs:
         return []
 
-    provider = get_embedding_provider()
-    query_vector = provider.embed_text(query)
-    embedding_map = _build_embedding_map(jobs)
+    semantic_score_map: dict[int, float] = {}
+    if query.strip():
+        try:
+            embed_result = embed_text_with_metadata(query, task_type="RETRIEVAL_QUERY")
+            log_embedding_usage(embed_result, context="ranked_search_query", text_preview=query)
+            if is_embedding_strict_mode() and (
+                embed_result.fallback_triggered or embed_result.provider_substituted
+            ):
+                raise EmbeddingProviderError(
+                    embed_result.error_message or "embedding provider unavailable"
+                )
+            semantic_score_map = _build_semantic_score_map(
+                jobs,
+                embed_result.vector,
+                provider_name=embed_result.provider_name,
+                model_name=embed_result.model_name,
+            )
+        except EmbeddingProviderError:
+            semantic_score_map = {}
     click_score_map = _build_click_score_map(jobs, user)
 
     wk = settings.RANKING_WEIGHT_KEYWORD
@@ -83,10 +117,7 @@ def rank_jobs(queryset: QuerySet[JobPosting], *, query: str, user=None, limit: i
     ranked: list[dict[str, Any]] = []
     for job in jobs:
         keyword_score = compute_keyword_score(query, job)
-        semantic_score = 0.0
-        job_vec = embedding_map.get(job.id)
-        if job_vec:
-            semantic_score = cosine_similarity(query_vector, job_vec)
+        semantic_score = semantic_score_map.get(job.id, 0.0)
         click_score = click_score_map.get(job.id, 0.0)
         final_score = (wk * keyword_score) + (ws * semantic_score) + (wc * click_score)
         ranked.append(

@@ -1,4 +1,5 @@
 from django.contrib.auth import get_user_model
+from django.test import override_settings
 from django.urls import reverse
 from django.utils import timezone
 from rest_framework.test import APITestCase
@@ -10,6 +11,7 @@ from apps.tracking.models import JobClickEvent, UserSearchEvent
 User = get_user_model()
 
 
+@override_settings(EMBEDDING_PROVIDER="local", EMBEDDING_DIMENSION=768)
 class TrackingAndRankingTests(APITestCase):
     def setUp(self):
         self.user = User.objects.create_user(

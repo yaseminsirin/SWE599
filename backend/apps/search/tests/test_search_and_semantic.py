@@ -1,3 +1,4 @@
+from django.test import override_settings
 from django.urls import reverse
 from django.utils import timezone
 from rest_framework.test import APITestCase
@@ -8,6 +9,11 @@ from apps.search.services.embedding_generation import generate_job_embedding
 from apps.search.services.similarity import cosine_similarity
 
 
+@override_settings(
+    EMBEDDING_PROVIDER="local",
+    EMBEDDING_DIMENSION=768,
+    SEMANTIC_TECH_ONLY=False,
+)
 class SearchAndSemanticTests(APITestCase):
     def setUp(self):
         self.job1 = JobPosting.objects.create(
@@ -16,7 +22,10 @@ class SearchAndSemanticTests(APITestCase):
             title="Python Backend Engineer",
             normalized_title="python backend engineer",
             company_name="Acme",
-            description_clean="Build backend APIs with Python",
+            description_clean=(
+                "Build backend APIs with Python and Django. Design REST services, "
+                "write tests, and deploy to production."
+            ),
             job_url="https://example.com/1",
             location_text="New York, US",
             city="New York",
@@ -32,7 +41,10 @@ class SearchAndSemanticTests(APITestCase):
             title="Data Analyst",
             normalized_title="data analyst",
             company_name="Beta",
-            description_clean="Analyze datasets and build dashboards",
+            description_clean=(
+                "Analyze datasets and build dashboards with SQL and Python. "
+                "Deliver reports for business stakeholders weekly."
+            ),
             job_url="https://example.com/2",
             location_text="Berlin, DE",
             city="Berlin",
@@ -67,7 +79,10 @@ class SearchAndSemanticTests(APITestCase):
         row = JobEmbedding.objects.get(job=self.job1)
         self.assertEqual(row.provider, "local")
         self.assertGreater(row.vector_dimension, 0)
-        self.assertEqual(len(row.embedding), row.vector_dimension)
+        from django.conf import settings
+
+        self.assertEqual(len(list(row.embedding)), settings.EMBEDDING_DIMENSION)
+        self.assertEqual(row.vector_dimension, settings.EMBEDDING_DIMENSION)
 
     def test_semantic_endpoint_returns_ranked_results(self):
         generate_job_embedding(self.job1)

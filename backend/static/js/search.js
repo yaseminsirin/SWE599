@@ -82,6 +82,42 @@
     return doc.body.innerHTML;
   }
 
+  function formatScore(value) {
+    if (value == null || value === "") return "—";
+    return String(value);
+  }
+
+  function scoreBadge(label, value) {
+    return (
+      '<span class="badge badge--score badge--score-' +
+      label.toLowerCase() +
+      '">' +
+      escapeHtml(label) +
+      " " +
+      escapeHtml(formatScore(value)) +
+      "</span>"
+    );
+  }
+
+  function buildScoreBadges(job, mode) {
+    if (mode === "semantic") {
+      return (
+        scoreBadge("Semantic", job.semantic_score) +
+        scoreBadge("Lexical", job.lexical_score) +
+        scoreBadge("Hybrid", job.hybrid_score)
+      );
+    }
+    if (mode === "ranked") {
+      return (
+        scoreBadge("Rank", job.rank_position) +
+        scoreBadge("Semantic", job.semantic_score) +
+        scoreBadge("Lexical", job.keyword_score) +
+        scoreBadge("Hybrid", job.final_score)
+      );
+    }
+    return "";
+  }
+
   function buildJobBadges(job, rankHtml) {
     var parts = [];
 
@@ -145,22 +181,9 @@
         var desc = job.description_clean || "";
         var snippet = sanitizeJobDescriptionHtml(desc);
         var url = job.job_url || "#";
-        var rank =
-          mode === "ranked"
-            ? '<span class="badge badge--score">Rank ' +
-              escapeHtml(String(job.rank_position ?? "—")) +
-              "</span>" +
-              '<span class="badge badge--score">Score ' +
-              escapeHtml(String(job.final_score ?? "—")) +
-              "</span>"
-            : "";
-        if (mode === "semantic" && job.semantic_score != null) {
-          rank +=
-            '<span class="badge badge--score">Similarity ' +
-            escapeHtml(String(job.semantic_score)) +
-            "</span>";
-        }
-        var badges = buildJobBadges(job, rank);
+        var scoreHtml =
+          mode === "semantic" || mode === "ranked" ? buildScoreBadges(job, mode) : "";
+        var badges = buildJobBadges(job, scoreHtml);
         return (
           '<article class="job-card">' +
           '<h3 class="job-card__title">' +
@@ -260,6 +283,7 @@
     if (currentMode === "semantic") {
       endpoint = "/api/jobs/semantic-search/";
       if (query) params.set("q", query);
+      params.set("tech_only", "true");
     } else if (currentMode === "ranked") {
       endpoint = "/api/jobs/ranked-search/";
       if (query) params.set("keyword", query);
@@ -331,6 +355,24 @@
       e.preventDefault();
       loadJobs(1);
     });
+
+    var alertBtn = document.getElementById("createAlertBtn");
+    if (alertBtn) {
+      alertBtn.addEventListener("click", function () {
+        var params = new URLSearchParams();
+        var queryEl = document.getElementById("query");
+        var locationEl = document.getElementById("location");
+        var employmentEl = document.getElementById("employment_type");
+        var remoteEl = document.getElementById("is_remote");
+        var query = queryEl && queryEl.value.trim();
+        if (query) params.set("keyword", query);
+        if (locationEl && locationEl.value.trim()) params.set("location", locationEl.value.trim());
+        if (employmentEl && employmentEl.value) params.set("employment_type", employmentEl.value);
+        if (remoteEl && remoteEl.checked) params.set("is_remote", "true");
+        params.set("search_mode", currentMode);
+        window.location.href = "/alerts/?" + params.toString();
+      });
+    }
 
     loadJobs(1);
   }

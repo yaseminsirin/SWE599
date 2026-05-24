@@ -12,7 +12,7 @@ class LocalHashEmbeddingProvider(BaseEmbeddingProvider):
         self.model_name = model_name
         self.vector_dimension = vector_dimension
 
-    def embed_text(self, text: str) -> list[float]:
+    def embed_text(self, text: str, *, task_type: str | None = None) -> list[float]:
         tokens = re.findall(r"[a-z0-9]+", (text or "").lower())
         vector = [0.0] * self.vector_dimension
         if not tokens:

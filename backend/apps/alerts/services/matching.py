@@ -1,68 +1,53 @@
 from django.conf import settings
 from django.core.mail import send_mail
-from django.db.models import Q, QuerySet
 from django.utils import timezone
 
 from apps.jobs.models import JobPosting
 
 from ..models import AlertDeliveryLog, JobAlert
-
-
-def _match_alert_jobs(alert: JobAlert) -> QuerySet[JobPosting]:
-    queryset = JobPosting.objects.all().order_by("-posted_at", "-created_at")
-
-    if alert.last_notified_at:
-        queryset = queryset.filter(normalized_at__gt=alert.last_notified_at)
-
-    if alert.keyword:
-        queryset = queryset.filter(
-            Q(title__icontains=alert.keyword) | Q(description_clean__icontains=alert.keyword)
-        )
-
-    if alert.location_text:
-        queryset = queryset.filter(
-            Q(city__icontains=alert.location_text)
-            | Q(country__icontains=alert.location_text)
-            | Q(location_text__icontains=alert.location_text)
-        )
-
-    if alert.is_remote is not None:
-        queryset = queryset.filter(is_remote=alert.is_remote)
-
-    if alert.employment_type:
-        queryset = queryset.filter(employment_type__iexact=alert.employment_type)
-
-    return queryset
+from .alert_retrieval import retrieve_alert_jobs
+from .rag.email_generation import compose_alert_email_body, generate_alert_email_content
 
 
 def _alert_recipient(alert: JobAlert) -> str:
     return (alert.notify_email or "").strip() or getattr(settings, "ALERT_DEFAULT_EMAIL", "")
 
 
-def _send_alert_email(alert: JobAlert, jobs: list[JobPosting], *, recipient: str) -> None:
+def _send_alert_email(alert: JobAlert, jobs: list[JobPosting], *, recipient: str) -> dict:
     subject = f"Job alert: {alert.name or alert.keyword or 'New matches'}"
-    lines = ["Here are your latest matching jobs:", ""]
-    for job in jobs:
-        lines.append(f"- {job.title} | {job.company_name} | {job.job_url}")
-    body = "\n".join(lines)
+    email_content = generate_alert_email_content(alert, jobs)
+    body = compose_alert_email_body(email_content, jobs, alert=alert)
     send_mail(
         subject=subject,
         message=body,
-        from_email=None,
+        from_email=settings.DEFAULT_FROM_EMAIL,
         recipient_list=[recipient],
         fail_silently=False,
     )
+    return {
+        "used_rag": email_content.used_rag,
+        "provider": email_content.provider,
+    }
 
 
-def process_job_alerts(*, max_results_per_alert: int = 20) -> dict:
+def process_job_alerts(
+    *,
+    min_results_per_alert: int = 10,
+    max_results_per_alert: int = 20,
+) -> dict:
     summary = {
         "alerts_seen": 0,
         "alerts_notified": 0,
         "jobs_matched": 0,
         "deliveries_created": 0,
         "delivery_duplicates": 0,
+        "rag_emails": 0,
+        "fallback_emails": 0,
         "errors": [],
     }
+
+    max_results_per_alert = max(1, min(max_results_per_alert, 20))
+    min_results_per_alert = max(1, min(min_results_per_alert, max_results_per_alert))
 
     alerts = JobAlert.objects.filter(is_active=True)
     for alert in alerts:
@@ -72,7 +57,11 @@ def process_job_alerts(*, max_results_per_alert: int = 20) -> dict:
             continue
 
         try:
-            candidates = list(_match_alert_jobs(alert)[:max_results_per_alert])
+            candidates = retrieve_alert_jobs(
+                alert,
+                min_results=min_results_per_alert,
+                max_results=max_results_per_alert,
+            )
             if not candidates:
                 continue
 
@@ -89,7 +78,11 @@ def process_job_alerts(*, max_results_per_alert: int = 20) -> dict:
                     summary["delivery_duplicates"] += 1
 
             if jobs_to_send:
-                _send_alert_email(alert, jobs_to_send, recipient=recipient)
+                email_meta = _send_alert_email(alert, jobs_to_send, recipient=recipient)
+                if email_meta.get("used_rag"):
+                    summary["rag_emails"] += 1
+                else:
+                    summary["fallback_emails"] += 1
                 alert.last_notified_at = timezone.now()
                 alert.save(update_fields=["last_notified_at", "updated_at"])
                 summary["alerts_notified"] += 1

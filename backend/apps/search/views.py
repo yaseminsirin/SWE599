@@ -6,6 +6,7 @@ from .pagination import JobResultsPagination
 from .serializers import JobPostingDetailSerializer, JobPostingSerializer
 from .services.job_search import apply_job_filters, get_base_job_queryset
 from .services.ranking import rank_jobs
+from .services.embeddings.types import EmbeddingProviderError
 from .services.semantic_search import semantic_search_jobs
 
 
@@ -44,7 +45,20 @@ class SemanticJobSearchAPIView(APIView):
             )
 
         top_k = int(request.query_params.get("top_k", 50))
-        scored_results = semantic_search_jobs(query, top_k=top_k)
+        tech_only = request.query_params.get("tech_only", "").strip().lower()
+        tech_filter = True if tech_only in {"1", "true", "yes"} else None
+        if tech_only in {"0", "false", "no"}:
+            tech_filter = False
+        try:
+            scored_results = semantic_search_jobs(query, top_k=top_k, tech_only=tech_filter)
+        except EmbeddingProviderError as exc:
+            return Response(
+                {
+                    "detail": str(exc),
+                    "error_code": "embedding_provider_unavailable",
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
 
         paginator = self.pagination_class()
         page = paginator.paginate_queryset(scored_results, request, view=self)
@@ -55,6 +69,8 @@ class SemanticJobSearchAPIView(APIView):
         data = serializer.data
         for idx, item in enumerate(page):
             data[idx]["semantic_score"] = round(float(item["semantic_score"]), 6)
+            data[idx]["hybrid_score"] = round(float(item.get("hybrid_score", item["semantic_score"])), 6)
+            data[idx]["lexical_score"] = round(float(item.get("lexical_score", 0.0)), 6)
 
         return paginator.get_paginated_response(data)
 

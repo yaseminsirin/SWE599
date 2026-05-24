@@ -2,6 +2,8 @@ from django.db.models import F, Q, QuerySet
 
 from apps.jobs.models import JobPosting
 
+from .job_quality import apply_keyword_token_filter, get_searchable_job_queryset
+
 
 def _parse_bool(value: str | None) -> bool | None:
     if value is None:
@@ -14,8 +16,17 @@ def _parse_bool(value: str | None) -> bool | None:
     return None
 
 
-def get_base_job_queryset() -> QuerySet[JobPosting]:
-    return JobPosting.objects.all().order_by(F("posted_at").desc(nulls_last=True), "-created_at")
+def get_base_job_queryset(*, include_demo: bool = False) -> QuerySet[JobPosting]:
+    if include_demo:
+        return JobPosting.objects.all().order_by(
+            F("posted_at").desc(nulls_last=True),
+            "-created_at",
+        )
+    return get_searchable_job_queryset(
+        real_sources_only=True,
+        exclude_demo=True,
+        tech_only=False,
+    ).order_by(F("posted_at").desc(nulls_last=True), "-created_at")
 
 
 def apply_job_filters(queryset: QuerySet[JobPosting], params: dict[str, str]) -> QuerySet[JobPosting]:
@@ -25,10 +36,7 @@ def apply_job_filters(queryset: QuerySet[JobPosting], params: dict[str, str]) ->
     is_remote = _parse_bool(params.get("is_remote"))
 
     if keyword:
-        queryset = queryset.filter(
-            Q(title__icontains=keyword)
-            | Q(description_clean__icontains=keyword)
-        )
+        queryset = apply_keyword_token_filter(queryset, keyword)
 
     if location:
         queryset = queryset.filter(

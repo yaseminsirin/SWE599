@@ -1,11 +1,18 @@
 from celery import shared_task
 
-from .services.embedding_generation import generate_job_embedding
+from django.conf import settings
+
+from .services.embedding_generation import (
+    generate_job_embedding,
+    regenerate_job_embeddings,
+)
 from .services.semantic_search import get_jobs_missing_embeddings
 
 
 @shared_task
-def generate_missing_job_embeddings_task(limit: int = 200) -> dict:
+def generate_missing_job_embeddings_task(limit: int | None = None) -> dict:
+    if limit is None:
+        limit = getattr(settings, "EMBEDDING_MAX_JOBS_PER_RUN", 100) or 100
     jobs = get_jobs_missing_embeddings(limit=limit)
     generated = 0
     errors: list[dict] = []
@@ -27,3 +34,9 @@ def generate_missing_job_embeddings_task(limit: int = 200) -> dict:
         "embeddings_generated": generated,
         "embedding_errors": errors,
     }
+
+
+@shared_task
+def regenerate_all_embeddings_task() -> dict:
+    """Incremental embedding batch using env limits (quota-safe)."""
+    return regenerate_job_embeddings()

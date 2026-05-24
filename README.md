@@ -15,6 +15,11 @@ Tech stack:
 - Celery + Celery Beat
 - Docker Compose
 
+**Demo UI (JobSense AI):** Django templates at `/search/`, `/alerts/`, `/login/` with static assets:
+- `backend/templates/*.html`
+- `backend/static/css/app.css`
+- `backend/static/js/auth.js`, `search.js`, `alerts.js`, `login.js`
+
 ---
 
 ## 2) Setup Instructions
@@ -23,8 +28,11 @@ Tech stack:
    - `cp .env.example .env`
 2. Start services:
    - `docker compose up --build`
-3. Run migrations:
+3. Migrations run automatically on `web` start; for manual run:
    - `docker compose exec web python manage.py migrate`
+
+**Deploy / nightly ingest:** see [DEPLOYMENT_REQUIREMENTS.md](DEPLOYMENT_REQUIREMENTS.md).  
+**DigitalOcean production:** see [docs/DIGITALOCEAN_DEPLOY.md](docs/DIGITALOCEAN_DEPLOY.md).
 4. (Optional) Create admin user:
    - `docker compose exec web python manage.py createsuperuser`
 
@@ -45,7 +53,9 @@ Source APIs:
 
 Ingestion / ranking / embeddings:
 - `INGEST_PAGE_SIZE`, `INGEST_MAX_PAGES`, `INGEST_MAX_PAGES_ADZUNA`, `INGEST_MAX_PAGES_USAJOBS`, `INGEST_MAX_PAGES_REMOTIVE`
-- `EMBEDDING_PROVIDER`, `EMBEDDING_MODEL_NAME`, `EMBEDDING_DIMENSION`
+- `EMBEDDING_PROVIDER` (default `sentence_transformers`), `EMBEDDING_MODEL`, `EMBEDDING_DIMENSION` (default `384`)
+- `EMBEDDING_STRICT_PROVIDER` (default `true` — no hash/Gemini mixing)
+- `SEMANTIC_TECH_ONLY`, `SEMANTIC_SEARCH_CANDIDATE_POOL`
 - `RANKING_WEIGHT_KEYWORD`, `RANKING_WEIGHT_SEMANTIC`, `RANKING_WEIGHT_CLICK`
 
 Email:
@@ -70,8 +80,9 @@ Useful manual tasks (inside `web`):
   `python manage.py shell -c "from apps.jobs.tasks import ingest_all_sources_task; print(ingest_all_sources_task())"`
 - Normalize raw records:  
   `python manage.py shell -c "from apps.jobs.tasks import normalize_raw_records_task; print(normalize_raw_records_task())"`
-- Generate missing embeddings:  
-  `python manage.py shell -c "from apps.search.tasks import generate_missing_job_embeddings_task; print(generate_missing_job_embeddings_task())"`
+- Generate / refresh embeddings (local MiniLM):  
+  `python manage.py audit_embeddings`  
+  `python manage.py regenerate_embeddings --relevant-only`
 - Process alerts:  
   `python manage.py shell -c "from apps.alerts.tasks import process_job_alerts_task; print(process_job_alerts_task())"`
 

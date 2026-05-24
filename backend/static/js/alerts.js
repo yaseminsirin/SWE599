@@ -9,6 +9,27 @@
     return div.innerHTML;
   }
 
+  function prefillFromSearchParams() {
+    var params = new URLSearchParams(window.location.search);
+    var keyword = params.get("keyword") || params.get("q") || "";
+    var location = params.get("location") || "";
+    var employment = params.get("employment_type") || "";
+    var remote = params.get("is_remote");
+    var searchMode = params.get("search_mode") || "keyword";
+
+    var keywordEl = document.getElementById("a_keyword");
+    var locationEl = document.getElementById("a_location");
+    var employmentEl = document.getElementById("a_employment");
+    var remoteEl = document.getElementById("a_remote");
+
+    if (keywordEl && keyword) keywordEl.value = keyword;
+    if (locationEl && location) locationEl.value = location;
+    if (employmentEl && employment) employmentEl.value = employment;
+    if (remoteEl) remoteEl.checked = remote === "true";
+
+    window.__alertPrefillFilters = { search_mode: searchMode };
+  }
+
   async function loadAlerts() {
     var root = document.getElementById("alertsList");
     if (!root) return;
@@ -45,6 +66,8 @@
           escapeHtml(a.keyword || "(no keyword)") +
           "</div>" +
           '<p class="job-card__meta">' +
+          escapeHtml(a.notify_email || "—") +
+          " · " +
           escapeHtml(a.location_text || "—") +
           " · " +
           escapeHtml(a.employment_type || "—") +
@@ -56,7 +79,7 @@
           "</div></div>" +
           '<div class="job-card__badges">' +
           remoteBadge +
-          "</div></div></div>"
+          "</div></div>"
         );
       })
       .join("");
@@ -73,6 +96,7 @@
   }
 
   function init() {
+    prefillFromSearchParams();
     var form = document.getElementById("alertForm");
     if (!form) return;
 
@@ -81,6 +105,13 @@
       var status = document.getElementById("alertStatus");
       if (status) status.textContent = "Creating…";
 
+      var email =
+        (document.getElementById("a_notify_email") && document.getElementById("a_notify_email").value.trim()) || "";
+      if (!email) {
+        if (status) status.textContent = "Email is required.";
+        return;
+      }
+
       var payload = {
         keyword: (document.getElementById("a_keyword") && document.getElementById("a_keyword").value.trim()) || "",
         location_text:
@@ -88,21 +119,28 @@
         is_remote: document.getElementById("a_remote") && document.getElementById("a_remote").checked ? true : null,
         employment_type:
           (document.getElementById("a_employment") && document.getElementById("a_employment").value) || "",
-        notify_email:
-          (document.getElementById("a_notify_email") && document.getElementById("a_notify_email").value.trim()) || ""
+        notify_email: email,
+        filters: window.__alertPrefillFilters || {},
       };
 
       var resp = await window.apiFetch("/api/alerts/", {
         method: "POST",
-        body: JSON.stringify(payload)
+        body: JSON.stringify(payload),
       });
       var data = await resp.json();
       if (!resp.ok) {
-        if (status) status.textContent = data.detail || "Failed";
+        if (status) {
+          status.textContent =
+            (data.notify_email && data.notify_email[0]) || data.detail || JSON.stringify(data) || "Failed";
+        }
         return;
       }
       if (status) status.textContent = "Alert created.";
       form.reset();
+      window.__alertPrefillFilters = {};
+      if (window.history.replaceState) {
+        window.history.replaceState({}, "", "/alerts/");
+      }
       loadAlerts();
     });
 

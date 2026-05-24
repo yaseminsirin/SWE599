@@ -1,8 +1,17 @@
+# Application dependencies (no --require-hashes, no per-package --hash pins).
 django
 djangorestframework
 psycopg[binary]
+pgvector
 celery
 redis
 django-celery-beat
 python-dotenv
 requests
+gunicorn
+whitenoise
+
+# Local semantic embeddings (CPU-only PyTorch; avoids CUDA wheel downloads/hash issues).
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch>=2.0.0,<3.0.0
+sentence-transformers>=3.0.0,<6.0.0
