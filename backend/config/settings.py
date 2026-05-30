@@ -1,4 +1,5 @@
 import os
+import socket
 import sys
 from pathlib import Path
 
@@ -173,6 +174,16 @@ SEMANTIC_REAL_SOURCES_ONLY = os.getenv("SEMANTIC_REAL_SOURCES_ONLY", "true").low
 RANKING_WEIGHT_KEYWORD = float(os.getenv("RANKING_WEIGHT_KEYWORD", "0.5"))
 RANKING_WEIGHT_SEMANTIC = float(os.getenv("RANKING_WEIGHT_SEMANTIC", "0.3"))
 RANKING_WEIGHT_CLICK = float(os.getenv("RANKING_WEIGHT_CLICK", "0.2"))
+
+# Prefer IPv4 for SMTP (Docker/DigitalOcean often has no IPv6 route).
+_orig_getaddrinfo = socket.getaddrinfo
+
+
+def _ipv4_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+    return _orig_getaddrinfo(host, port, socket.AF_INET, type, proto, flags)
+
+
+socket.getaddrinfo = _ipv4_getaddrinfo
 
 EMAIL_BACKEND = os.getenv(
     "EMAIL_BACKEND",
