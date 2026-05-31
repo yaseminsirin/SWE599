@@ -5,7 +5,6 @@ from apps.jobs.services.job_labels import format_location_display
 
 from ...models import JobAlert
 from .email_generation import AlertEmailContent, build_alert_job_url
-from .content_helpers import derive_fallback_job_reason
 from .job_context import format_user_alert_preferences, get_alert_query_label
 
 
@@ -25,7 +24,7 @@ def _source_label(source: str) -> str:
 def _job_match_note(content: AlertEmailContent, index: int, job: JobPosting, query: str) -> str:
     if index < len(content.job_match_notes) and content.job_match_notes[index].strip():
         return content.job_match_notes[index].strip()
-    return derive_fallback_job_reason(job, query)
+    return "This role matches your alert based on similarity between the alert query and the job title/description."
 
 
 def compose_alert_email_html(
@@ -84,6 +83,15 @@ def compose_alert_email_html(
 
     jobs_html = "".join(job_cards)
 
+    summary_html = ""
+    if content.show_summary and content.summary:
+        summary_html = f"""
+              <div style="margin:24px 0 0 0;">
+                <h2 style="margin:0 0 12px 0;font-size:16px;color:#0f172a;">Why these jobs match</h2>
+                <div style="font-size:14px;line-height:1.7;color:#334155;">{_esc(content.summary)}</div>
+              </div>
+              """
+
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -113,10 +121,7 @@ def compose_alert_email_html(
                 {pref_html}
               </div>
 
-              <div style="margin:24px 0 0 0;">
-                <h2 style="margin:0 0 12px 0;font-size:16px;color:#0f172a;">Why these jobs match</h2>
-                <div style="font-size:14px;line-height:1.7;color:#334155;">{_esc(content.summary)}</div>
-              </div>
+              {summary_html}
 
               {signals_html}
 
@@ -159,7 +164,8 @@ def compose_alert_email_text(
         lines.append("")
         lines.append("Preferences: " + " · ".join(prefs))
 
-    lines.extend(["", "Why these jobs match", content.summary, ""])
+    if content.show_summary and content.summary:
+        lines.extend(["", "Why these jobs match", content.summary, ""])
 
     if content.show_key_signals and content.key_signals:
         lines.append("Key Match Signals")

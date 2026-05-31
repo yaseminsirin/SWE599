@@ -6,11 +6,10 @@ from django.conf import settings
 from apps.jobs.models import JobPosting
 
 from ...models import JobAlert
-from .content_helpers import derive_fallback_signals, resolve_key_signals_for_email
+from .content_helpers import derive_taxonomy_signals, signals_ready_for_display
 from .job_context import (
     build_job_match_notes,
     build_llm_alert_context,
-    derive_fallback_summary,
     format_jobs_for_context,
     get_alert_query_label,
     parse_llm_response,
@@ -26,7 +25,8 @@ class AlertEmailContent:
     summary: str = ""
     key_signals: list[str] = field(default_factory=list)
     job_match_notes: list[str] = field(default_factory=list)
-    show_key_signals: bool = True
+    show_summary: bool = False
+    show_key_signals: bool = False
     used_rag: bool = False
     provider: str | None = None
 
@@ -46,16 +46,17 @@ def build_alert_subject(alert: JobAlert, job_count: int) -> str:
 
 
 def build_fallback_content(alert: JobAlert, jobs: list[JobPosting]) -> AlertEmailContent:
+    """No LLM — hide AI Insight; show taxonomy signals only when >= 3 matches."""
     query = get_alert_query_label(alert)
-    raw_signals = derive_fallback_signals(jobs, query=query)
-    display_signals, show_signals = resolve_key_signals_for_email(raw_signals)
-    summary = derive_fallback_summary(query, jobs, raw_signals)
-    job_notes = build_job_match_notes(jobs, query=query)
+    taxonomy = derive_taxonomy_signals(jobs, query=query)
+    show_signals = signals_ready_for_display(taxonomy)
+    job_notes = build_job_match_notes(jobs, query=query, taxonomy_signals=taxonomy)
 
     return AlertEmailContent(
-        summary=summary,
-        key_signals=display_signals,
+        summary="",
+        key_signals=taxonomy if show_signals else [],
         job_match_notes=job_notes,
+        show_summary=False,
         show_key_signals=show_signals,
         used_rag=False,
         provider=None,
@@ -65,13 +66,14 @@ def build_fallback_content(alert: JobAlert, jobs: list[JobPosting]) -> AlertEmai
 def generate_alert_email_content(alert: JobAlert, jobs: list[JobPosting]) -> AlertEmailContent:
     """
     Generate RAG email copy from already-retrieved jobs.
-    Never raises — falls back to plain content on any failure.
+    Never raises — falls back to taxonomy-only content on any failure.
     """
     fallback = build_fallback_content(alert, jobs)
     if not jobs:
         return fallback
 
     query = get_alert_query_label(alert)
+    taxonomy = derive_taxonomy_signals(jobs, query=query)
 
     try:
         provider = get_llm_provider()
@@ -93,22 +95,23 @@ def generate_alert_email_content(alert: JobAlert, jobs: list[JobPosting]) -> Ale
         raw = provider.generate(system=SYSTEM_PROMPT, user=user_prompt)
         parsed = parse_llm_response(raw, jobs=jobs)
 
-        if not parsed.summary:
+        if not parsed.is_valid:
             return fallback
 
-        raw_signals = parsed.key_signals or derive_fallback_signals(jobs, query=query)
-        display_signals, show_signals = resolve_key_signals_for_email(raw_signals)
+        show_summary = bool(parsed.summary)
+        show_signals = signals_ready_for_display(parsed.key_signals)
         job_notes = build_job_match_notes(
             jobs,
             query=query,
             job_reasons=parsed.job_reasons,
-            ordered_notes=parsed.job_notes,
+            taxonomy_signals=taxonomy,
         )
 
         return AlertEmailContent(
-            summary=parsed.summary,
-            key_signals=display_signals,
+            summary=parsed.summary if show_summary else "",
+            key_signals=parsed.key_signals if show_signals else [],
             job_match_notes=job_notes,
+            show_summary=show_summary,
             show_key_signals=show_signals,
             used_rag=True,
             provider=provider.provider_name,

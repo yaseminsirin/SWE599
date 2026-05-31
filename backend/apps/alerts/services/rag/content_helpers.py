@@ -1,75 +1,42 @@
-"""Testable helpers for alert email copy quality (signals, phrases, fallbacks)."""
+"""Controlled signal taxonomy and AI content validation for alert emails."""
 
 from __future__ import annotations
 
 import re
-from collections import Counter
 
 from apps.jobs.models import JobPosting
 
-# Single-word tokens that must never appear alone as a Key Match Signal.
-_MEANINGLESS_ALONE = frozenset(
-    {
-        "position",
-        "located",
-        "location",
-        "office",
-        "department",
-        "company",
-        "management",
-        "program",
-        "data",
-        "business",
-        "team",
-        "analyst",
-        "candidate",
-        "employee",
-        "organization",
-        "government",
-        "federal",
-        "agency",
-        "division",
-        "directorate",
-        "service",
-        "services",
-        "support",
-        "general",
-        "senior",
-        "junior",
-        "lead",
-        "head",
-        "chief",
-        "director",
-        "manager",
-        "specialist",
-        "coordinator",
-        "assistant",
-        "associate",
-        "professional",
-        "staff",
-        "member",
-        "unit",
-        "section",
-        "branch",
-        "region",
-        "state",
-        "national",
-        "public",
-        "private",
-        "sector",
-        "industry",
-        "client",
-        "customer",
-        "project",
-        "projects",
-    }
+MIN_SIGNALS_TO_SHOW = 3
+
+# Substrings that disqualify a signal or summary immediately.
+_BANNED_SUBSTRINGS = (
+    "position is",
+    "located",
+    "button below",
+    "click on",
+    "learn more",
+    "applicants",
+    "announcement",
+    "agency button",
+    "in support of",
+    "admin operations",
+    "analyst systems analyst",
+    "management program",
+    "share recurring themes",
+    "search_mode",
+    "semantic",
+    "keyword mode",
 )
 
-_LOCATION_WORDS = frozenset(
-    {"located", "location", "office", "city", "state", "region", "remote", "onsite", "on-site"}
+_BANNED_SUMMARY_PHRASES = (
+    "perfect match",
+    "dream job",
+    "guaranteed",
+    "best job ever",
+    "we found jobs that may interest you",
 )
 
-# Allowed one-word signals when they are real technologies/tools.
+# Known technologies — allowed as one-word signals.
 _TECHNOLOGY_WORDS = frozenset(
     {
         "sql",
@@ -81,8 +48,6 @@ _TECHNOLOGY_WORDS = frozenset(
         "django",
         "flask",
         "fastapi",
-        "nodejs",
-        "node",
         "aws",
         "azure",
         "gcp",
@@ -96,135 +61,91 @@ _TECHNOLOGY_WORDS = frozenset(
         "kafka",
         "spark",
         "tableau",
-        "powerbi",
         "excel",
         "git",
         "linux",
         "terraform",
-        "ansible",
-        "jenkins",
-        "ci/cd",
-        "graphql",
-        "rest",
-        "api",
-        "apis",
-        "ml",
-        "ai",
-        "nlp",
-        "etl",
-        "saas",
         "devops",
         "qa",
-        "selenium",
-        "jira",
-        "figma",
+        "graphql",
+        "ml",
+        "ai",
+        "etl",
+        "saas",
         "scrum",
         "agile",
         "kotlin",
         "golang",
-        "go",
         "rust",
-        "c++",
-        "c#",
-        ".net",
-        "spring",
-        "hibernate",
         "snowflake",
         "databricks",
-        "looker",
-        "dbt",
         "airflow",
+        "ci/cd",
     }
 )
 
-_STOPWORDS = frozenset(
-    {
-        "and",
-        "the",
-        "for",
-        "with",
-        "you",
-        "your",
-        "our",
-        "are",
-        "was",
-        "were",
-        "will",
-        "this",
-        "that",
-        "from",
-        "have",
-        "has",
-        "had",
-        "not",
-        "but",
-        "into",
-        "over",
-        "such",
-        "their",
-        "they",
-        "them",
-        "who",
-        "what",
-        "when",
-        "where",
-        "how",
-        "about",
-        "more",
-        "other",
-        "than",
-        "then",
-        "also",
-        "all",
-        "any",
-        "can",
-        "may",
-        "job",
-        "jobs",
-        "role",
-        "roles",
-        "new",
-        "one",
-        "two",
-        "three",
-        "each",
-        "both",
-        "between",
-        "well",
-        "full",
-        "time",
-        "part",
-        "per",
-        "via",
-        "etc",
-        "must",
-        "should",
-        "would",
-        "could",
-    }
-)
-
-LOW_CONFIDENCE_SIGNALS = [
-    "Role-relevant responsibilities",
-    "Skills aligned with your alert",
-    "Similar job titles and descriptions",
+# Role-agnostic professional concepts: (display label, match patterns).
+SIGNAL_TAXONOMY: list[tuple[str, tuple[str, ...]]] = [
+    ("Data analysis", ("data analysis", "data analyst", "analytical analysis", "analyze data")),
+    ("Reporting", ("reporting", "report development", "analytical reporting", "status reports")),
+    ("Business intelligence", ("business intelligence", "business analytics", "bi dashboard")),
+    ("SQL", (" sql", "sql,", "sql.", "sql-based", "sql server", "mysql", "postgresql", "tsql")),
+    ("Python", ("python",)),
+    ("Dashboarding", ("dashboard", "dashboards", "dashboarding")),
+    ("Performance metrics", ("performance metrics", "performance monitoring", "key performance")),
+    ("Stakeholder communication", ("stakeholder", "stakeholders", "cross-functional communication")),
+    ("Requirements analysis", ("requirements analysis", "requirements gathering", "business requirements")),
+    ("API development", ("api development", "rest api", "restful api", "api design")),
+    ("Backend services", ("backend service", "backend development", "backend engineer", "server-side")),
+    ("Cloud infrastructure", ("cloud infrastructure", "cloud deployment", "cloud computing", " aws", " azure", " gcp")),
+    ("DevOps", ("devops", "dev ops")),
+    ("CI/CD", ("ci/cd", "continuous integration", "continuous delivery", "continuous deployment")),
+    ("Testing and QA", ("quality assurance", "qa engineer", "test automation", "software testing", "testing and qa")),
+    ("Product strategy", ("product strategy", "product vision", "product leadership")),
+    ("Roadmap planning", ("roadmap planning", "product roadmap", "roadmap ownership")),
+    ("User research", ("user research", "user interviews", "usability research")),
+    ("Agile delivery", ("agile delivery", "agile development", "scrum", "kanban", "sprint planning")),
+    ("Cybersecurity analysis", ("cybersecurity", "security analysis", "information security", "cyber security")),
+    ("Financial analysis", ("financial analysis", "financial modeling", "financial reporting")),
+    ("Operations analysis", ("operations analysis", "operational analysis", "business operations")),
+    ("Program evaluation", ("program evaluation", "program analysis")),
+    ("Process improvement", ("process improvement", "continuous improvement", "process optimization")),
+    ("Distributed systems", ("distributed systems", "distributed system", "microservices")),
+    ("Data-informed decision making", ("data-informed", "data driven", "data-driven", "decision support")),
 ]
 
 _TOKEN_RE = re.compile(r"[a-z0-9+#./-]+", re.IGNORECASE)
 
 
-def normalize_phrase(phrase: str) -> str:
-    return " ".join((phrase or "").split()).strip()
+def normalize_phrase(text: str) -> str:
+    return " ".join((text or "").split()).strip()
 
 
 def _phrase_words(phrase: str) -> list[str]:
     return [w.lower() for w in _TOKEN_RE.findall(phrase or "")]
 
 
+def _contains_banned(text: str) -> bool:
+    lowered = (text or "").lower()
+    return any(banned in lowered for banned in _BANNED_SUBSTRINGS)
+
+
+def clean_ai_signal(raw: str) -> str | None:
+    """Normalize and validate a single LLM or taxonomy signal."""
+    phrase = normalize_phrase(raw)
+    if not phrase or _contains_banned(phrase):
+        return None
+    if not is_quality_signal(phrase):
+        return None
+    return phrase
+
+
 def is_quality_signal(phrase: str) -> bool:
-    """True when phrase is a meaningful 2+ word signal or a known technology."""
+    """
+    Valid signals: 2-5 word professional phrases, or a known technology token.
+    """
     cleaned = normalize_phrase(phrase)
-    if not cleaned or len(cleaned) < 2:
+    if not cleaned or _contains_banned(cleaned):
         return False
 
     words = _phrase_words(cleaned)
@@ -232,100 +153,88 @@ def is_quality_signal(phrase: str) -> bool:
         return False
 
     if len(words) == 1:
-        token = words[0]
-        if token in _MEANINGLESS_ALONE:
-            return token in _TECHNOLOGY_WORDS
-        return token in _TECHNOLOGY_WORDS or token not in _STOPWORDS
+        return words[0] in _TECHNOLOGY_WORDS
 
-    if len(words) > 5:
+    if len(words) < 2 or len(words) > 5:
         return False
 
-    if all(w in _LOCATION_WORDS for w in words):
-        return False
-
-    if len(words) == 2 and all(w in _MEANINGLESS_ALONE for w in words):
-        return False
-
-    content_words = [w for w in words if w not in _STOPWORDS]
-    return len(content_words) >= 2
+    return True
 
 
 def filter_key_signals(signals: list[str], *, max_items: int = 5) -> list[str]:
     seen: set[str] = set()
     result: list[str] = []
     for raw in signals:
-        phrase = normalize_phrase(raw)
-        if not phrase:
+        cleaned = clean_ai_signal(raw)
+        if not cleaned:
             continue
-        key = phrase.lower()
+        key = cleaned.lower()
         if key in seen:
             continue
-        if not is_quality_signal(phrase):
-            continue
         seen.add(key)
-        result.append(phrase)
+        result.append(cleaned)
         if len(result) >= max_items:
             break
     return result
 
 
-def signals_are_confident(signals: list[str]) -> bool:
-    return len(filter_key_signals(signals)) >= 2
+def sanitize_ai_summary(text: str) -> str | None:
+    """Return summary only when it passes quality checks."""
+    cleaned = normalize_phrase(text)
+    if not cleaned or len(cleaned) < 40:
+        return None
+
+    lowered = cleaned.lower()
+    if _contains_banned(cleaned):
+        return None
+    if any(phrase in lowered for phrase in _BANNED_SUMMARY_PHRASES):
+        return None
+    if "share recurring themes" in lowered or "position is" in lowered:
+        return None
+
+    return cleaned
 
 
-def _tokenize_for_phrases(text: str) -> list[str]:
-    tokens = [t.lower() for t in _TOKEN_RE.findall(text or "")]
-    return [t for t in tokens if t not in _STOPWORDS and len(t) >= 2 and not t.isdigit()]
+def is_quality_job_reason(reason: str) -> bool:
+    """Validate a per-job LLM reason sentence."""
+    cleaned = normalize_phrase(reason)
+    if not cleaned or len(cleaned) < 30:
+        return False
+    if _contains_banned(cleaned):
+        return False
+    if not cleaned.endswith((".", "!", "?")):
+        cleaned = cleaned + "."
+    # Must look like a sentence (at least 6 words).
+    if len(_phrase_words(cleaned)) < 6:
+        return False
+    return True
 
 
-def extract_meaningful_phrases(
-    text: str,
-    *,
-    query: str = "",
-    min_words: int = 2,
-    max_words: int = 4,
-) -> list[str]:
-    """Extract 2-4 word phrases from text, prioritizing query overlap."""
-    tokens = _tokenize_for_phrases(text)
-    if len(tokens) < min_words:
-        return []
-
-    query_tokens = set(_tokenize_for_phrases(query))
-    phrases: list[tuple[int, str]] = []
-
-    for n in range(min_words, max_words + 1):
-        for i in range(len(tokens) - n + 1):
-            chunk = tokens[i : i + n]
-            if len(chunk) >= 2 and all(t in _MEANINGLESS_ALONE for t in chunk):
-                continue
-            phrase = " ".join(chunk)
-            if not is_quality_signal(phrase):
-                continue
-            score = sum(1 for t in chunk if t in query_tokens)
-            phrases.append((score, phrase))
-
-    # Dedupe preserving best score
-    best: dict[str, int] = {}
-    for score, phrase in phrases:
-        key = phrase.lower()
-        best[key] = max(best.get(key, 0), score)
-
-    ranked = sorted(best.items(), key=lambda item: (-item[1], -len(item[0].split()), item[0]))
-    return [phrase for phrase, _score in ranked]
+def _haystack_contains(haystack: str, pattern: str) -> bool:
+    padded = f" {haystack.lower()} "
+    return pattern.lower() in padded
 
 
-def derive_fallback_signals(
-    jobs: list[JobPosting],
-    query: str = "",
-    *,
-    max_signals: int = 4,
-) -> list[str]:
-    """Phrase-based fallback signals from job titles and descriptions."""
-    phrase_counts: Counter[str] = Counter()
-    query_phrases = extract_meaningful_phrases(query, query=query)
+def match_taxonomy_signals(haystack: str, *, max_signals: int = 5) -> list[str]:
+    """Match controlled taxonomy labels against combined job/query text."""
+    matched: list[str] = []
+    seen: set[str] = set()
+    for label, patterns in SIGNAL_TAXONOMY:
+        if any(_haystack_contains(haystack, pattern) for pattern in patterns):
+            key = label.lower()
+            if key not in seen:
+                seen.add(key)
+                matched.append(label)
+        if len(matched) >= max_signals:
+            break
+    return matched
 
+
+def derive_taxonomy_signals(jobs: list[JobPosting], query: str = "", *, max_signals: int = 5) -> list[str]:
+    """Taxonomy-based signals from query + job titles/descriptions."""
+    parts = [query or ""]
     for job in jobs:
-        haystack = " ".join(
+        parts.extend(
             filter(
                 None,
                 [
@@ -336,98 +245,50 @@ def derive_fallback_signals(
                 ],
             )
         )
-        for phrase in extract_meaningful_phrases(haystack, query=query):
-            phrase_counts[phrase.lower()] += 1
-
-    # Boost query-aligned phrases appearing in corpus
-    for phrase in query_phrases:
-        key = phrase.lower()
-        if key in phrase_counts:
-            phrase_counts[key] += 2
-
-    ranked = sorted(phrase_counts.items(), key=lambda item: (-item[1], -len(item[0].split()), item[0]))
-    signals: list[str] = []
-    for phrase_key, count in ranked:
-        if count < 2 and len(jobs) > 2:
-            continue
-        display = " ".join(w.capitalize() if w.isalpha() else w for w in phrase_key.split())
-        if is_quality_signal(display):
-            signals.append(display)
-        if len(signals) >= max_signals:
-            break
-
-    if not signals:
-        for phrase in query_phrases[:max_signals]:
-            if is_quality_signal(phrase):
-                signals.append(phrase)
-
-    return filter_key_signals(signals, max_items=max_signals)
+    haystack = " ".join(parts)
+    return match_taxonomy_signals(haystack, max_signals=max_signals)
 
 
-def derive_fallback_job_reason(job: JobPosting, query: str) -> str:
-    """Build a specific per-job match line from title + description phrases."""
+def build_fallback_reason(job: JobPosting, query: str, signals: list[str] | None = None) -> str:
+    """
+    Professional template when LLM job_reason is unavailable.
+    Never pastes random description fragments.
+    """
     query = normalize_phrase(query) or "your alert"
-    haystack = " ".join(
-        filter(
-            None,
-            [
-                job.title or "",
-                job.description_clean or "",
-            ],
-        )
-    )
-    phrases = derive_fallback_signals([job], query=query, max_signals=3)
-    if not phrases:
-        phrases = extract_meaningful_phrases(haystack, query=query)[:3]
+    quality = filter_key_signals(signals or [])
 
-    if phrases:
-        if len(phrases) == 1:
-            focus = phrases[0].lower()
-            return (
-                f"This role fits your {query} alert because it emphasizes {focus} "
-                f"in the listed responsibilities at {job.company_name or 'this organization'}."
-            )
-        joined = ", ".join(phrases[:-1]) + f", and {phrases[-1]}"
-        return (
-            f"This role fits your {query} alert because it focuses on {joined.lower()} "
-            f"based on the title and description."
-        )
-
-    title = job.title or "This position"
-    return (
-        f"This role fits your {query} alert through its title ({title}) "
-        f"and responsibilities described for {job.company_name or 'the employer'}."
-    )
-
-
-def derive_fallback_summary(alert_query: str, jobs: list[JobPosting], signals: list[str]) -> str:
-    """Query-aware summary without generic filler."""
-    query = normalize_phrase(alert_query) or "your alert"
-    count = len(jobs)
-    noun = "role" if count == 1 else "roles"
-
-    quality_signals = filter_key_signals(signals)
-    if quality_signals:
-        themes = ", ".join(s.lower() for s in quality_signals[:3])
-        return (
-            f"These {noun} align with your {query} alert because they emphasize "
-            f"{themes} across the matched listings."
-        )
-
-    return (
-        f"These {noun} align with your {query} alert based on recurring responsibilities, "
-        f"skills, and job titles found in your matched results."
-    )
-
-
-def resolve_key_signals_for_email(signals: list[str]) -> tuple[list[str], bool]:
-    """
-    Return (signals_to_display, show_section).
-    Uses low-confidence generic bullets when filtered signals are insufficient.
-    """
-    quality = filter_key_signals(signals)
     if len(quality) >= 2:
-        return quality, True
-    if len(quality) == 1:
-        return quality + LOW_CONFIDENCE_SIGNALS[:2], True
-    return LOW_CONFIDENCE_SIGNALS, True
+        return (
+            f"This role matches your alert because its title and responsibilities are aligned with "
+            f"{query}-related work, especially {quality[0].lower()} and {quality[1].lower()}."
+        )
+
+    return (
+        "This role matches your alert based on similarity between the alert query "
+        "and the job title/description."
+    )
+
+
+def build_fallback_summary(query: str) -> str:
+    """Controlled non-LLM summary (shown only when explicitly enabled)."""
+    query = normalize_phrase(query) or "your alert"
+    return (
+        f"These roles were selected because their titles and descriptions are semantically close "
+        f"to your alert for {query}. The results are ranked using JobSense AI's matching pipeline."
+    )
+
+
+def signals_ready_for_display(signals: list[str]) -> bool:
+    return len(filter_key_signals(signals)) >= MIN_SIGNALS_TO_SHOW
+
+
+def build_jobs_haystack(jobs: list[JobPosting], query: str = "") -> str:
+    parts = [query or ""]
+    for job in jobs:
+        parts.extend(
+            filter(
+                None,
+                [job.title or "", job.normalized_title or "", job.description_clean or ""],
+            )
+        )
+    return " ".join(parts)

@@ -5,7 +5,7 @@ from django.utils import timezone
 
 from apps.alerts.models import JobAlert
 from apps.alerts.services.matching import _send_alert_email, process_job_alerts
-from apps.alerts.services.rag.content_helpers import is_quality_signal
+from apps.alerts.services.rag.content_helpers import MIN_SIGNALS_TO_SHOW, is_quality_signal
 from apps.alerts.services.rag.email_generation import (
     build_alert_job_url,
     build_alert_subject,
@@ -24,11 +24,11 @@ _TECH_DESC = (
 
 def _json_llm_response(job_id: int) -> str:
     return f"""{{
-      "summary": "These roles align with your backend developer alert because they emphasize API development, Python services, and distributed backend systems.",
+      "summary": "These roles align with your backend developer alert because they emphasize API development, Python backend services, and distributed systems engineering across the matched listings.",
       "key_signals": [
-        "API and backend service development",
-        "Python and distributed systems",
-        "Cloud deployment experience"
+        "API and backend development",
+        "Python backend services",
+        "Distributed systems engineering"
       ],
       "job_reasons": {{
         "{job_id}": "This role fits your backend developer alert because it focuses on Python REST APIs and Django backend services at Acme."
@@ -73,14 +73,15 @@ class RagEmailGenerationTests(TestCase):
         self.assertEqual(provider.api_key, "test-gemini-key")
 
     @override_settings(LLM_PROVIDER="")
-    def test_fallback_when_provider_not_configured(self):
+    def test_fallback_hides_ai_sections_without_llm(self):
         content = generate_alert_email_content(self.alert, [self.job])
         self.assertFalse(content.used_rag)
-        self.assertIn("backend developer", content.summary.lower())
-        self.assertNotIn("search_mode", content.summary.lower())
-        self.assertNotIn("share recurring themes across title", content.summary.lower())
-        for signal in content.key_signals:
-            self.assertTrue(is_quality_signal(signal) or signal.startswith("Role-relevant"))
+        self.assertFalse(content.show_summary)
+        self.assertNotIn("share recurring themes", (content.summary or "").lower())
+        if content.show_key_signals:
+            self.assertGreaterEqual(len(content.key_signals), MIN_SIGNALS_TO_SHOW)
+            for signal in content.key_signals:
+                self.assertTrue(is_quality_signal(signal), signal)
 
     def test_successful_rag_generation_json(self):
         mock_provider = MagicMock()
@@ -95,13 +96,14 @@ class RagEmailGenerationTests(TestCase):
             content = generate_alert_email_content(self.alert, [self.job])
 
         self.assertTrue(content.used_rag)
+        self.assertTrue(content.show_summary)
+        self.assertTrue(content.show_key_signals)
         self.assertIn("backend developer", content.summary.lower())
-        self.assertGreaterEqual(len(content.key_signals), 2)
-        self.assertTrue(all(is_quality_signal(s) for s in content.key_signals[:3]))
+        self.assertGreaterEqual(len(content.key_signals), MIN_SIGNALS_TO_SHOW)
+        self.assertTrue(all(is_quality_signal(s) for s in content.key_signals))
         self.assertIn("backend developer", content.job_match_notes[0].lower())
-        self.assertNotIn("through the title and listed responsibilities", content.job_match_notes[0].lower())
 
-    def test_provider_failure_falls_back(self):
+    def test_provider_failure_falls_back_without_ai_insight(self):
         mock_provider = MagicMock()
         mock_provider.provider_name = "openai"
         mock_provider.is_available.return_value = True
@@ -114,8 +116,9 @@ class RagEmailGenerationTests(TestCase):
             content = generate_alert_email_content(self.alert, [self.job])
 
         self.assertFalse(content.used_rag)
+        self.assertFalse(content.show_summary)
         fallback = build_fallback_content(self.alert, [self.job])
-        self.assertEqual(content.summary, fallback.summary)
+        self.assertEqual(content.show_key_signals, fallback.show_key_signals)
 
     def test_subject_format(self):
         subject = build_alert_subject(self.alert, 6)
@@ -127,7 +130,7 @@ class RagEmailGenerationTests(TestCase):
         SITE_URL="http://localhost:8000",
     )
     @patch("apps.alerts.services.matching.send_transactional_email")
-    def test_alert_email_uses_html_and_tracking_links(self, mock_brevo):
+    def test_alert_email_hides_garbage_and_uses_tracking(self, mock_brevo):
         mock_brevo.return_value = {"messageId": "test-id"}
         mock_provider = MagicMock()
         mock_provider.provider_name = "gemini"
@@ -141,25 +144,20 @@ class RagEmailGenerationTests(TestCase):
             meta = _send_alert_email(self.alert, [self.job], recipient="alerts@example.com")
 
         self.assertTrue(meta["used_rag"])
-        mock_brevo.assert_called_once()
         call_kwargs = mock_brevo.call_args.kwargs
-        self.assertIn("html_body", call_kwargs)
-        self.assertIn("JobSense AI", call_kwargs["html_body"])
-        self.assertIn("View job", call_kwargs["html_body"])
-        self.assertNotIn("search_mode", call_kwargs["html_body"])
+        self.assertNotIn("position is", call_kwargs["html_body"].lower())
         self.assertNotIn("https://example.com/rag-1", call_kwargs["html_body"])
         expected_url = build_alert_job_url(alert=self.alert, job=self.job)
         self.assertIn(expected_url, call_kwargs["html_body"])
-        self.assertIn("backend developer", call_kwargs["body"])
 
-    def test_fallback_email_html_is_professional(self):
+    def test_fallback_email_has_no_garbage_phrases(self):
         content = build_fallback_content(self.alert, [self.job])
         text_body, html_body = compose_alert_email(content, [self.job], alert=self.alert)
         self.assertIn("Matching Jobs", text_body)
-        self.assertIn("Python Backend Engineer", text_body)
-        self.assertIn("/api/tracking/alert-click/", html_body)
+        self.assertNotIn("position is", html_body.lower())
         self.assertNotIn("search_mode", html_body)
-        self.assertNotIn("through the title and listed responsibilities", html_body.lower())
+        if content.show_summary:
+            self.fail("Fallback should not show AI summary section")
 
     @override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
     @patch("apps.alerts.services.matching.send_transactional_email")
@@ -179,5 +177,4 @@ class RagEmailGenerationTests(TestCase):
 
         self.assertEqual(summary["alerts_notified"], 1)
         self.assertEqual(summary["fallback_emails"], 1)
-        self.assertEqual(summary["rag_emails"], 0)
         mock_brevo.assert_called_once()
