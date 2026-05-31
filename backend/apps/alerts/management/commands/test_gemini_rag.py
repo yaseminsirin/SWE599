@@ -2,7 +2,7 @@ from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
 from apps.alerts.models import JobAlert
-from apps.alerts.services.rag.email_generation import compose_alert_email_body, generate_alert_email_content
+from apps.alerts.services.rag.email_generation import compose_alert_email, generate_alert_email_content
 from apps.alerts.services.rag.llm.gemini_provider import GeminiLLMProvider
 from apps.jobs.models import JobPosting
 
@@ -48,4 +48,8 @@ class Command(BaseCommand):
                     "Fell back to plain email text. Check logs for Gemini errors."
                 )
             )
-        self.stdout.write(compose_alert_email_body(content, jobs))
+        text_body, html_body = compose_alert_email(content, jobs, alert=alert)
+        self.stdout.write("\n--- PLAIN TEXT ---")
+        self.stdout.write(text_body)
+        self.stdout.write("\n--- HTML (first 1200 chars) ---")
+        self.stdout.write(html_body[:1200] + ("..." if len(html_body) > 1200 else ""))

@@ -8,9 +8,15 @@ logger = logging.getLogger(__name__)
 BREVO_API_URL = "https://api.brevo.com/v3/smtp/email"
 
 
-def send_transactional_email(*, recipient: str, subject: str, body: str) -> dict:
+def send_transactional_email(
+    *,
+    recipient: str,
+    subject: str,
+    body: str,
+    html_body: str | None = None,
+) -> dict:
     """
-    Send a plain-text email via Brevo Transactional Email API.
+    Send email via Brevo Transactional Email API (HTML + plain-text).
 
     Raises on configuration or API errors. Caller should catch per-alert.
     """
@@ -30,6 +36,8 @@ def send_transactional_email(*, recipient: str, subject: str, body: str) -> dict
         "subject": subject,
         "textContent": body,
     }
+    if html_body:
+        payload["htmlContent"] = html_body
     headers = {
         "accept": "application/json",
         "api-key": api_key,

@@ -6,10 +6,11 @@ from django.conf import settings
 from apps.jobs.models import JobPosting
 
 from ...models import JobAlert
-from ..alert_retrieval import format_job_listing_line
 from .job_context import (
-    build_alert_query,
+    build_llm_alert_context,
+    derive_fallback_signals,
     format_jobs_for_context,
+    get_alert_query_label,
     parse_llm_response,
 )
 from .llm.factory import get_llm_provider
@@ -20,22 +21,43 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class AlertEmailContent:
-    explanation: str = ""
-    job_bullets: list[str] = field(default_factory=list)
+    summary: str = ""
+    key_signals: list[str] = field(default_factory=list)
+    job_match_notes: list[str] = field(default_factory=list)
     used_rag: bool = False
     provider: str | None = None
 
+    @property
+    def explanation(self) -> str:
+        return self.summary
+
+    @property
+    def job_bullets(self) -> list[str]:
+        return self.key_signals
+
+
+def build_alert_subject(alert: JobAlert, job_count: int) -> str:
+    query = get_alert_query_label(alert)
+    noun = "match" if job_count == 1 else "matches"
+    return f"JobSense AI Alert: {query} — {job_count} relevant {noun}"
+
 
 def build_fallback_content(alert: JobAlert, jobs: list[JobPosting]) -> AlertEmailContent:
-    criteria = build_alert_query(alert)
-    query_hint = alert.keyword or "your saved criteria"
-    explanation = (
-        f"We found {len(jobs)} software/tech job(s) that may interest you based on "
-        f'"{query_hint}". Review the listings below and apply directly on the source site.'
+    query = get_alert_query_label(alert)
+    count = len(jobs)
+    noun = "position" if count == 1 else "positions"
+    summary = (
+        f"JobSense AI identified {count} {noun} aligned with your interest in "
+        f"\"{query}\". These listings share recurring themes across title, company context, "
+        f"and role descriptions from your alert results."
     )
-    if criteria:
-        explanation += f" Alert filters: {criteria.replace(chr(10), '; ')}."
-    return AlertEmailContent(explanation=explanation, used_rag=False, provider=None)
+    return AlertEmailContent(
+        summary=summary,
+        key_signals=derive_fallback_signals(jobs),
+        job_match_notes=[],
+        used_rag=False,
+        provider=None,
+    )
 
 
 def generate_alert_email_content(alert: JobAlert, jobs: list[JobPosting]) -> AlertEmailContent:
@@ -57,7 +79,7 @@ def generate_alert_email_content(alert: JobAlert, jobs: list[JobPosting]) -> Ale
         return fallback
 
     try:
-        alert_query = build_alert_query(alert)
+        alert_query = build_llm_alert_context(alert)
         jobs_context = format_jobs_for_context(jobs)
         user_prompt = build_user_prompt(
             alert_query=alert_query,
@@ -65,12 +87,13 @@ def generate_alert_email_content(alert: JobAlert, jobs: list[JobPosting]) -> Ale
             job_count=len(jobs),
         )
         raw = provider.generate(system=SYSTEM_PROMPT, user=user_prompt)
-        explanation, bullets = parse_llm_response(raw)
-        if not explanation:
+        parsed = parse_llm_response(raw)
+        if not parsed.summary:
             return fallback
         return AlertEmailContent(
-            explanation=explanation,
-            job_bullets=bullets[:3],
+            summary=parsed.summary,
+            key_signals=parsed.key_signals[:5] or derive_fallback_signals(jobs),
+            job_match_notes=parsed.job_notes[: len(jobs)],
             used_rag=True,
             provider=provider.provider_name,
         )
@@ -89,34 +112,28 @@ def build_alert_job_url(*, alert: JobAlert, job: JobPosting) -> str:
     return f"{base}/api/tracking/alert-click/{job.id}/?alert_id={alert.id}"
 
 
+def compose_alert_email(
+    content: AlertEmailContent,
+    jobs: list[JobPosting],
+    *,
+    alert: JobAlert,
+) -> tuple[str, str]:
+    """Return (plain_text, html) email bodies."""
+    from .email_html import compose_alert_email_html, compose_alert_email_text
+
+    text_body = compose_alert_email_text(content, jobs, alert=alert)
+    html_body = compose_alert_email_html(content, jobs, alert=alert)
+    return text_body, html_body
+
+
 def compose_alert_email_body(
     content: AlertEmailContent,
     jobs: list[JobPosting],
     *,
     alert: JobAlert | None = None,
 ) -> str:
-    lines: list[str] = []
-
-    if content.explanation:
-        lines.append(content.explanation)
-        lines.append("")
-
-    if content.job_bullets:
-        lines.append("Highlights:")
-        for bullet in content.job_bullets:
-            lines.append(f"- {bullet}")
-        lines.append("")
-
-    lines.append("Matching jobs:")
-    for job in jobs:
-        listing = format_job_listing_line(job)
-        if alert:
-            apply_url = build_alert_job_url(alert=alert, job=job)
-            lines.append(f"- {listing}")
-            lines.append(f"  Apply: {apply_url}")
-        else:
-            lines.append(f"- {listing} | {job.job_url}")
-
-    lines.append("")
-    lines.append("— JobSense AI")
-    return "\n".join(lines).strip() + "\n"
+    """Backward-compatible plain-text composer."""
+    if alert is None:
+        raise ValueError("alert is required")
+    text_body, _ = compose_alert_email(content, jobs, alert=alert)
+    return text_body

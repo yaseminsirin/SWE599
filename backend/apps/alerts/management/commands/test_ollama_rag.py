@@ -6,10 +6,15 @@ import requests
 from apps.alerts.models import JobAlert
 from apps.alerts.services.alert_retrieval import retrieve_alert_jobs
 from apps.alerts.services.rag.email_generation import (
-    compose_alert_email_body,
+    compose_alert_email,
     generate_alert_email_content,
 )
-from apps.alerts.services.rag.job_context import build_alert_query, format_jobs_for_context, parse_llm_response
+from apps.alerts.services.rag.job_context import (
+    ParsedLlmEmail,
+    build_alert_query,
+    format_jobs_for_context,
+    parse_llm_response,
+)
 from apps.alerts.services.rag.llm.factory import get_llm_provider
 from apps.alerts.services.rag.llm.ollama_provider import OllamaLLMProvider
 from apps.alerts.services.rag.prompts import SYSTEM_PROMPT, build_user_prompt
@@ -18,7 +23,7 @@ from apps.alerts.services.rag.prompts import SYSTEM_PROMPT, build_user_prompt
 class Command(BaseCommand):
     help = (
         "Test Ollama RAG email generation only (no email sent, no alert delivery logs). "
-        "Verifies Docker → Ollama connectivity and parsed EXPLANATION/HIGHLIGHTS."
+        "Verifies Docker → Ollama connectivity and parsed SUMMARY/KEY_SIGNALS/JOB_NOTES."
     )
 
     def add_arguments(self, parser):
@@ -90,13 +95,19 @@ class Command(BaseCommand):
         self.stdout.write("\n--- RAW OLLAMA OUTPUT ---")
         self.stdout.write(raw or "(empty)")
 
-        explanation, highlights = parse_llm_response(raw) if raw else ("", [])
-        self.stdout.write("\n--- PARSED EXPLANATION ---")
-        self.stdout.write(explanation or "(empty)")
-        self.stdout.write("\n--- PARSED HIGHLIGHTS ---")
-        if highlights:
-            for bullet in highlights:
+        parsed = parse_llm_response(raw) if raw else ParsedLlmEmail()
+        self.stdout.write("\n--- PARSED SUMMARY ---")
+        self.stdout.write(parsed.summary or "(empty)")
+        self.stdout.write("\n--- PARSED KEY SIGNALS ---")
+        if parsed.key_signals:
+            for bullet in parsed.key_signals:
                 self.stdout.write(f"- {bullet}")
+        else:
+            self.stdout.write("(none)")
+        self.stdout.write("\n--- PARSED JOB NOTES ---")
+        if parsed.job_notes:
+            for note in parsed.job_notes:
+                self.stdout.write(f"- {note}")
         else:
             self.stdout.write("(none)")
 
@@ -107,8 +118,11 @@ class Command(BaseCommand):
             self.stdout.write(self.style.WARNING(f"Reason: {parse_error}"))
         self.stdout.write(f"used_rag={content.used_rag} provider={content.provider}")
 
-        self.stdout.write("\n--- COMPOSED EMAIL PREVIEW (not sent) ---")
-        self.stdout.write(compose_alert_email_body(content, jobs, alert=alert))
+        text_body, html_body = compose_alert_email(content, jobs, alert=alert)
+        self.stdout.write("\n--- COMPOSED PLAIN-TEXT PREVIEW (not sent) ---")
+        self.stdout.write(text_body)
+        self.stdout.write("\n--- COMPOSED HTML PREVIEW (first 1200 chars, not sent) ---")
+        self.stdout.write(html_body[:1200] + ("..." if len(html_body) > 1200 else ""))
 
     def _check_connectivity(self, base_url: str) -> None:
         self.stdout.write("\nChecking Ollama connectivity from this container...")

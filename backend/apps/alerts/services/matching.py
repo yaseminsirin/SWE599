@@ -8,7 +8,11 @@ from apps.jobs.models import JobPosting
 from ..models import AlertDeliveryLog, JobAlert
 from .alert_retrieval import retrieve_alert_jobs
 from .brevo_email import send_transactional_email
-from .rag.email_generation import compose_alert_email_body, generate_alert_email_content
+from .rag.email_generation import (
+    build_alert_subject,
+    compose_alert_email,
+    generate_alert_email_content,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -18,14 +22,15 @@ def _alert_recipient(alert: JobAlert) -> str:
 
 
 def _send_alert_email(alert: JobAlert, jobs: list[JobPosting], *, recipient: str) -> dict:
-    subject = f"Job alert: {alert.name or alert.keyword or 'New matches'}"
     email_content = generate_alert_email_content(alert, jobs)
-    body = compose_alert_email_body(email_content, jobs, alert=alert)
+    subject = build_alert_subject(alert, len(jobs))
+    text_body, html_body = compose_alert_email(email_content, jobs, alert=alert)
     try:
         send_transactional_email(
             recipient=recipient,
             subject=subject,
-            body=body,
+            body=text_body,
+            html_body=html_body,
         )
     except Exception as exc:
         logger.exception(

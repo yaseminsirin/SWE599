@@ -1,6 +1,8 @@
 # RAG job alert emails
 
-Retrieval is **not** done by the LLM. Nightly alerts select jobs via the existing search pipeline (keyword filters + local sentence-transformers embeddings + pgvector + hybrid reranking). RAG only writes the email introduction and highlights from that retrieved list.
+Retrieval is **not** done by the LLM. Nightly alerts select jobs via the existing search pipeline (keyword filters + local sentence-transformers embeddings + pgvector + hybrid reranking). RAG only writes the email copy (summary, key signals, per-job match notes) from that retrieved list.
+
+Alert emails are sent as **professional HTML** via the **Brevo REST API** (`htmlContent` + `textContent` fallback). Internal fields such as `search_mode` or raw filter JSON are never shown to users.
 
 Manual processing:
 
@@ -42,6 +44,8 @@ docker compose up -d --force-recreate web worker
 | `GEMINI_API_KEY` | Required when `LLM_PROVIDER=gemini` |
 | `OLLAMA_BASE_URL` | Ollama HTTP API base (see Docker note below) |
 | `SITE_URL` | Base URL for alert-click tracking links in emails |
+| `BREVO_API_KEY` | Brevo transactional email API key (production) |
+| `DEFAULT_FROM_EMAIL` | Verified sender address in Brevo |
 
 Copy from `.env.example` and set secrets in `.env` (never commit keys).
 
@@ -101,6 +105,16 @@ print(r.text[:500])
 
 Expected: `status 200` and a JSON list including `llama3.2`.
 
+## Preview email (no send)
+
+```bash
+docker compose exec web python manage.py preview_alert_email --keyword "backend developer" --max-jobs 5
+# or
+docker compose exec web python manage.py preview_alert_email --alert-id 3
+```
+
+Prints subject, plain text, and HTML preview. Uses RAG when configured, otherwise fallback copy.
+
 ## Test RAG only (no email sent)
 
 ```bash
@@ -112,9 +126,9 @@ This prints:
 - Retrieved jobs
 - System prompt and user prompt
 - Raw Ollama output
-- Parsed `EXPLANATION` and `HIGHLIGHTS`
+- Parsed `SUMMARY`, `KEY_SIGNALS`, and `JOB_NOTES`
 - `FALLBACK TRIGGERED? yes/no`
-- Composed email preview (not sent)
+- Composed plain-text and HTML preview (not sent)
 
 Requires `LLM_PROVIDER=ollama` in `.env`.
 
@@ -126,16 +140,24 @@ docker compose exec web python manage.py process_alerts --min 10 --max 20
 
 Success indicators:
 
-- Summary shows `rag_emails` > 0 and `fallback_emails` = 0
-- Console email body includes narrative text plus a **Highlights:** section
-- Each job has an **Apply:** link via `/api/tracking/alert-click/<job_id>/?alert_id=<id>`
+- Summary shows `rag_emails` > 0 and `fallback_emails` = 0 (when LLM is healthy)
+- Brevo Activity Logs show delivered messages with HTML content
+- Email subject: `JobSense AI Alert: <query> — <N> relevant matches`
+- Each job card has a **View job** button linking via `/api/tracking/alert-click/<job_id>/?alert_id=<id>`
+
+### Brevo Activity Logs
+
+1. Log in to [Brevo](https://app.brevo.com) → **Transactional** → **Email** → **Logs** (or **Real time**).
+2. Filter by recipient and time range after running `process_alerts`.
+3. Open a message: confirm **Subject**, **HTML** preview (JobSense AI header, intro card, “Why these jobs match”, job cards), and delivery status **Delivered**.
 
 ## If Ollama is not reachable
 
 The system **does not fail**. `generate_alert_email_content()` catches errors and returns fallback copy:
 
-- Plain explanation: “We found N software/tech job(s)…”
-- Full job list with tracking URLs
+- Query-aware summary without internal filter fields
+- Key Match Signals derived from job title/description tokens
+- Full job list with tracking URLs (HTML + plain text)
 - `used_rag=False`, `rag_emails=0`, `fallback_emails` incremented
 
 Typical errors:
@@ -146,26 +168,12 @@ Typical errors:
 
 Check worker logs for `RAG email generation failed for alert …` warnings.
 
-## Sample RAG email (Ollama)
-
-```
-These roles align with your python developer alert across software and security engineering positions.
-
-Highlights:
-- Senior software engineer roles at Lockheed Martin (Maryland).
-- Computer engineer (cybersecurity) at Bureau of Industry and Security (DC).
-- Head of Engineering at Lemon.io (remote-friendly).
-
-Matching jobs:
-- Python Developer | Social Security Administration | Woodlawn, Maryland
-  Apply: http://localhost:8000/api/tracking/alert-click/1681/?alert_id=3
-...
-— JobSense AI
-```
-
 ## Implementation notes
 
+- HTML composer: `backend/apps/alerts/services/rag/email_html.py`
+- RAG copy: `backend/apps/alerts/services/rag/email_generation.py`
+- LLM output format: `SUMMARY:` + `KEY_SIGNALS:` + `JOB_NOTES:` (parsed in `job_context.py`)
+- Brevo sender: `backend/apps/alerts/services/brevo_email.py`
 - Provider: `backend/apps/alerts/services/rag/llm/ollama_provider.py` — `POST {OLLAMA_BASE_URL}/api/chat`
 - Factory: `LLM_PROVIDER=ollama` → `OllamaLLMProvider`
-- Output format: `EXPLANATION:` + `HIGHLIGHTS:` (parsed in `job_context.py`)
 - Nightly schedule: `python manage.py setup_nightly_schedule` registers `nightly-job-alerts`
