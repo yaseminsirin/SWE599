@@ -137,6 +137,34 @@ class RealDataRetrievalTests(TestCase):
         self.assertEqual(len(filtered), 1)
         self.assertEqual(filtered[0]["job"].id, self.real_job.id)
 
+    def test_query_term_prefilter_narrows_pgvector_scope(self):
+        from apps.search.services.job_quality import narrow_jobs_by_terms
+        from apps.search.services.semantic_search import _query_prefilter_terms
+
+        truck_job = JobPosting.objects.create(
+            source="adzuna",
+            source_job_id="truck-2",
+            title="Regional Truck Driver Owner Operator",
+            company_name="UACL Logistics",
+            description_clean=(
+                "Seeking Class A CDL Van and Flatbed Owner Operators with experience "
+                "operating commercial routes across regional lanes."
+            ),
+            category_normalized="Logistics & Warehouse Jobs",
+            job_url="https://example.com/truck-2",
+            content_hash="truck-hash-2",
+            posted_at=timezone.now(),
+        )
+        long_query = (
+            "Python developer with backend experience building REST APIs, "
+            "web services, and data-driven applications"
+        )
+        terms = _query_prefilter_terms(long_query)
+        qs = narrow_jobs_by_terms(JobPosting.objects.all(), terms)
+        ids = set(qs.values_list("id", flat=True))
+        self.assertIn(self.real_job.id, ids)
+        self.assertNotIn(truck_job.id, ids)
+
     @override_settings(SEMANTIC_TECH_ONLY=True)
     @patch("apps.search.services.semantic_search.embed_text")
     @patch("apps.search.services.semantic_search.JobEmbedding")

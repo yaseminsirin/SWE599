@@ -119,3 +119,17 @@ def apply_keyword_token_filter(queryset: QuerySet[JobPosting], keyword: str) -> 
         token_q |= Q(normalized_title__icontains=token)
         token_q |= Q(description_clean__icontains=token)
     return queryset.filter(token_q)
+
+
+def narrow_jobs_by_terms(queryset: QuerySet[JobPosting], terms: set[str]) -> QuerySet[JobPosting]:
+    """Keep jobs that mention at least one query term (query-aware prefilter, not global tech gate)."""
+    if not terms:
+        return queryset
+    token_q = Q()
+    for token in terms:
+        token_q |= Q(title__icontains=token)
+        token_q |= Q(normalized_title__icontains=token)
+        token_q |= Q(description_clean__icontains=token)
+        token_q |= Q(category_normalized__icontains=token)
+        token_q |= Q(category_raw__icontains=token)
+    return queryset.filter(token_q)

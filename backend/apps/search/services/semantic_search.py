@@ -10,47 +10,31 @@ from .embeddings.factory import (
     is_embedding_strict_mode,
     log_embedding_usage,
 )
-from .job_quality import get_searchable_job_queryset, is_quality_job
-from .retrieval_rerank import filter_relevant_semantic_results, rerank_semantic_candidates
+from .job_quality import get_searchable_job_queryset, is_quality_job, narrow_jobs_by_terms
+from .retrieval_rerank import (
+    content_tokens,
+    core_query_terms,
+    filter_relevant_semantic_results,
+    rerank_semantic_candidates,
+)
 from .vector_query import cosine_distance_annotation, semantic_score_from_row
 
 
-def semantic_search_jobs(
-    query: str,
+def _query_prefilter_terms(query: str) -> set[str]:
+    return core_query_terms(query) or content_tokens(query)
+
+
+def _pgvector_candidates(
     *,
-    top_k: int = 20,
-    tech_only: bool | None = None,
+    query_vector: list[float],
+    index_provider: str,
+    index_model: str,
+    job_ids,
+    pool_size: int,
 ) -> list[dict[str, Any]]:
-    """
-    pgvector first-stage retrieval on real API jobs, then lightweight hybrid rerank.
-    Excludes demo seed data by default.
-    """
-    embed_result = embed_text_with_metadata(query, task_type="RETRIEVAL_QUERY")
-    log_embedding_usage(embed_result, context="semantic_search_query", text_preview=query)
-
-    if is_embedding_strict_mode() and (
-        embed_result.fallback_triggered or embed_result.provider_substituted
-    ):
-        detail = embed_result.error_message or "provider unavailable"
-        raise EmbeddingProviderError(
-            f"Semantic search blocked: {detail} (EMBEDDING_STRICT_PROVIDER=true)"
-        )
-
-    query_vector = embed_result.vector
-    index_provider = embed_result.provider_name
-    index_model = embed_result.model_name
-
-    searchable_ids = get_searchable_job_queryset(
-        real_sources_only=True,
-        exclude_demo=True,
-        tech_only=tech_only,
-    ).values_list("id", flat=True)
-
-    pool_size = int(getattr(settings, "SEMANTIC_SEARCH_CANDIDATE_POOL", 200))
-
     rows = (
         JobEmbedding.objects.filter(
-            job_id__in=searchable_ids,
+            job_id__in=job_ids,
             provider=index_provider,
             model_name=index_model,
         )
@@ -69,6 +53,64 @@ def semantic_search_jobs(
                 "job": job,
                 "semantic_score": semantic_score_from_row(row),
             }
+        )
+    return candidates
+
+
+def semantic_search_jobs(
+    query: str,
+    *,
+    top_k: int = 20,
+    tech_only: bool | None = None,
+) -> list[dict[str, Any]]:
+    """
+    pgvector retrieval with query-term prefiltering, hybrid rerank, and relevance gate.
+
+    Large mixed corpora (e.g. USAJOBS + Adzuna) can return unrelated nearest neighbors;
+    we first restrict pgvector to jobs mentioning core query terms, then rerank.
+    """
+    embed_result = embed_text_with_metadata(query, task_type="RETRIEVAL_QUERY")
+    log_embedding_usage(embed_result, context="semantic_search_query", text_preview=query)
+
+    if is_embedding_strict_mode() and (
+        embed_result.fallback_triggered or embed_result.provider_substituted
+    ):
+        detail = embed_result.error_message or "provider unavailable"
+        raise EmbeddingProviderError(
+            f"Semantic search blocked: {detail} (EMBEDDING_STRICT_PROVIDER=true)"
+        )
+
+    query_vector = embed_result.vector
+    index_provider = embed_result.provider_name
+    index_model = embed_result.model_name
+
+    base_qs = get_searchable_job_queryset(
+        real_sources_only=True,
+        exclude_demo=True,
+        tech_only=tech_only,
+    )
+    pool_size = int(getattr(settings, "SEMANTIC_SEARCH_CANDIDATE_POOL", 200))
+    terms = _query_prefilter_terms(query)
+
+    narrowed_qs = narrow_jobs_by_terms(base_qs, terms) if terms else base_qs
+    job_ids = narrowed_qs.values_list("id", flat=True)
+
+    candidates = _pgvector_candidates(
+        query_vector=query_vector,
+        index_provider=index_provider,
+        index_model=index_model,
+        job_ids=job_ids,
+        pool_size=pool_size,
+    )
+
+    if not candidates and terms:
+        job_ids = base_qs.values_list("id", flat=True)
+        candidates = _pgvector_candidates(
+            query_vector=query_vector,
+            index_provider=index_provider,
+            index_model=index_model,
+            job_ids=job_ids,
+            pool_size=pool_size,
         )
 
     reranked = rerank_semantic_candidates(query, candidates)
