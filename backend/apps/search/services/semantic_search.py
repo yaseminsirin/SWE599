@@ -12,9 +12,8 @@ from .embeddings.factory import (
 )
 from .job_quality import get_searchable_job_queryset, is_quality_job, narrow_jobs_by_terms
 from .retrieval_rerank import (
-    content_tokens,
-    core_query_terms,
     filter_relevant_semantic_results,
+    prefilter_terms,
     rerank_semantic_candidates,
     retrieval_query_text,
 )
@@ -22,7 +21,7 @@ from .vector_query import cosine_distance_annotation, semantic_score_from_row
 
 
 def _query_prefilter_terms(query: str) -> set[str]:
-    return core_query_terms(query) or content_tokens(query)
+    return prefilter_terms(query)
 
 
 def _pgvector_candidates(

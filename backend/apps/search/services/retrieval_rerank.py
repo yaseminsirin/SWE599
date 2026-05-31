@@ -124,6 +124,44 @@ TECH_QUERY_SIGNALS = frozenset(
     }
 )
 
+# Too broad for SQL prefilter / title gate — match unrelated clerk & healthcare listings.
+GENERIC_BROAD_TERMS = frozenset({"data", "web", "api", "apis", "cloud", "mobile", "ai", "ml", "sql"})
+
+STRONG_ROLE_TERMS = frozenset(
+    {
+        "python",
+        "django",
+        "flask",
+        "react",
+        "java",
+        "javascript",
+        "typescript",
+        "developer",
+        "engineer",
+        "software",
+        "backend",
+        "frontend",
+        "devops",
+        "programmer",
+        "fullstack",
+        "kubernetes",
+        "aws",
+        "analyst",
+        "scientist",
+    }
+)
+
+IT_CATEGORY_HINTS = (
+    "information technology",
+    "software",
+    "computer",
+    "engineering",
+    "developer",
+    "programmer",
+    "data science",
+    "cyber",
+)
+
 NON_TECH_JOB_PHRASES = (
     "truck driver",
     "cdl",
@@ -137,11 +175,43 @@ NON_TECH_JOB_PHRASES = (
     "janitor",
     "cashier",
     "nurse aide",
+    "psychiatrist",
+    "program support assistant",
+    "miscellaneous clerk",
+    "healthcare",
+    "registered nurse",
+    "medical assistant",
 )
 
 
 def content_tokens(text: str) -> set[str]:
     return {token for token in _tokenize(text) if len(token) >= 3 and token not in SEARCH_STOPWORDS}
+
+
+def is_tech_query(query: str) -> bool:
+    return bool(content_tokens(query) & TECH_QUERY_SIGNALS)
+
+
+def prefilter_terms(query: str) -> set[str]:
+    """Terms used to narrow pgvector — avoid generic tokens like data/web."""
+    terms = core_query_terms(query) or content_tokens(query)
+    if not terms:
+        return set()
+    if is_tech_query(query):
+        strong = terms & STRONG_ROLE_TERMS
+        if strong:
+            return strong
+    specific = terms - GENERIC_BROAD_TERMS
+    return specific if specific else terms
+
+
+def match_terms_for_relevance(query: str) -> set[str]:
+    terms = core_query_terms(query) or content_tokens(query)
+    if is_tech_query(query):
+        strong = terms & STRONG_ROLE_TERMS
+        if strong:
+            return strong
+    return terms
 
 
 def core_query_terms(query: str, *, max_terms: int = 6) -> set[str]:
@@ -158,16 +228,19 @@ def retrieval_query_text(query: str) -> str:
     """
     Compact text for embedding / pgvector retrieval.
 
-    Long natural-language queries embed far from short job-title vectors; use core
-    terms so "Python developer with backend experience …" behaves like "python developer".
+    Long natural-language queries embed far from short job-title vectors; use strong
+    role/skill terms so detailed searches behave like focused keyword queries.
     """
     stripped = (query or "").strip()
     if not stripped:
         return ""
+    strong = prefilter_terms(stripped)
+    if strong:
+        return " ".join(sorted(strong))
     word_count = len(stripped.split())
     terms = core_query_terms(stripped)
     if word_count > 5 and terms:
-        return " ".join(sorted(terms))
+        return " ".join(sorted(terms - GENERIC_BROAD_TERMS or terms))
     if len(terms) >= 2:
         return " ".join(sorted(terms))
     return stripped
@@ -278,7 +351,7 @@ def is_relevant_semantic_match(
     if is_domain_mismatch(query, job):
         return False
 
-    q_terms = core_query_terms(query) or content_tokens(query)
+    q_terms = match_terms_for_relevance(query)
     if not q_terms:
         return semantic_score >= 0.35
 
@@ -287,28 +360,28 @@ def is_relevant_semantic_match(
         " ".join(filter(None, [job.category_normalized, job.category_raw]))
     )
     body_terms = content_tokens(job.description_clean or "")
+    category_blob = " ".join(filter(None, [job.category_normalized, job.category_raw])).lower()
 
     title_hits = q_terms & title_terms
     category_hits = q_terms & category_terms
     body_hits = q_terms & body_terms
-    any_hits = title_hits | category_hits | body_hits
+
+    if is_tech_query(query):
+        if title_hits:
+            return True
+        if category_hits and any(hint in category_blob for hint in IT_CATEGORY_HINTS):
+            return True
+        if len(body_hits) >= 2 and semantic_score >= 0.42 and lexical_score >= 0.08:
+            return True
+        return False
 
     if title_hits or category_hits:
         return True
-
     if body_hits and semantic_score >= 0.38:
         return True
-
-    if any_hits and hybrid_score >= 0.35:
+    if body_hits and hybrid_score >= 0.35:
         return True
-
-    if semantic_score >= 0.48 and lexical_score >= 0.04:
-        return True
-
-    if len(body_hits) >= 2 and lexical_score >= 0.05:
-        return True
-
-    return False
+    return semantic_score >= 0.48 and lexical_score >= 0.04
 
 
 def filter_relevant_semantic_results(
@@ -318,7 +391,7 @@ def filter_relevant_semantic_results(
     if not results:
         return []
 
-    filtered = [
+    return [
         item
         for item in results
         if is_relevant_semantic_match(
@@ -329,8 +402,3 @@ def filter_relevant_semantic_results(
             semantic_score=float(item.get("semantic_score", 0.0)),
         )
     ]
-    if filtered:
-        return filtered
-
-    # Query-term prefilter already removed cross-domain noise; keep reranked matches.
-    return [item for item in results if not is_domain_mismatch(query, item["job"])]

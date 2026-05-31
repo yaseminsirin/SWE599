@@ -10,9 +10,11 @@ from apps.search.services.retrieval_rerank import (
     compute_lexical_score,
     filter_relevant_semantic_results,
     is_relevant_semantic_match,
+    prefilter_terms,
     rerank_semantic_candidates,
     retrieval_query_text,
 )
+from apps.search.services.job_quality import narrow_jobs_by_terms
 from apps.search.services.semantic_search import semantic_search_jobs
 from django.utils import timezone
 
@@ -149,8 +151,43 @@ class RealDataRetrievalTests(TestCase):
         self.assertLess(len(compact.split()), len(long_query.split()))
         self.assertEqual(retrieval_query_text("python developer"), "developer python")
 
+    def test_clerk_and_psychiatrist_rejected_for_python_long_query(self):
+        clerk_job = JobPosting.objects.create(
+            source="usajobs",
+            source_job_id="clerk-2",
+            title="Program Support Assistant (OA)",
+            company_name="VA",
+            description_clean=(
+                "Enter data into systems and provide administrative support for work orders."
+            ),
+            category_normalized="Miscellaneous Clerk And Assistant",
+            job_url="https://example.com/clerk-2",
+            content_hash="clerk-hash-2",
+            posted_at=timezone.now(),
+        )
+        psych_job = JobPosting.objects.create(
+            source="adzuna",
+            source_job_id="psych-2",
+            title="Locums Psychiatrist",
+            company_name="Weatherby Healthcare",
+            description_clean="Healthcare psychiatrist role treating patients in outpatient clinic.",
+            category_normalized="Healthcare & Nursing Jobs",
+            job_url="https://example.com/psych-2",
+            content_hash="psych-hash-2",
+            posted_at=timezone.now(),
+        )
+        long_query = (
+            "Python developer with backend experience building REST APIs, "
+            "web services, and data-driven applications"
+        )
+        terms = prefilter_terms(long_query)
+        qs = narrow_jobs_by_terms(JobPosting.objects.all(), terms)
+        ids = set(qs.values_list("id", flat=True))
+        self.assertIn(self.real_job.id, ids)
+        self.assertNotIn(clerk_job.id, ids)
+        self.assertNotIn(psych_job.id, ids)
+
     def test_query_term_prefilter_narrows_pgvector_scope(self):
-        from apps.search.services.job_quality import narrow_jobs_by_terms
         from apps.search.services.semantic_search import _query_prefilter_terms
 
         truck_job = JobPosting.objects.create(
@@ -171,17 +208,25 @@ class RealDataRetrievalTests(TestCase):
             "Python developer with backend experience building REST APIs, "
             "web services, and data-driven applications"
         )
-        terms = _query_prefilter_terms(long_query)
+        terms = prefilter_terms(long_query)
         qs = narrow_jobs_by_terms(JobPosting.objects.all(), terms)
         ids = set(qs.values_list("id", flat=True))
         self.assertIn(self.real_job.id, ids)
         self.assertNotIn(truck_job.id, ids)
 
     @override_settings(SEMANTIC_TECH_ONLY=True)
-    @patch("apps.search.services.semantic_search.embed_text")
+    @patch("apps.search.services.semantic_search.embed_text_with_metadata")
     @patch("apps.search.services.semantic_search.JobEmbedding")
     def test_semantic_search_excludes_demo_source(self, mock_embedding_model, mock_embed):
-        mock_embed.return_value = [0.0] * 768
+        from apps.search.services.embeddings.types import EmbeddingResult
+
+        mock_embed.return_value = EmbeddingResult(
+            vector=[0.0] * 384,
+            provider_name="local",
+            model_name="hashing-v1",
+            dimension=384,
+            configured_provider="local",
+        )
         row = MagicMock()
         row.job = self.real_job
         row.distance = 0.2
