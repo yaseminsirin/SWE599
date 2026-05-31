@@ -82,6 +82,30 @@ class AlertsTests(APITestCase):
         self.assertEqual(resp.status_code, 400)
         self.assertIn("notify_email", resp.data)
 
+    def test_cancel_all_alerts_by_email(self):
+        JobAlert.objects.create(keyword="python", notify_email="user@example.com", is_active=True)
+        JobAlert.objects.create(keyword="django", notify_email="user@example.com", is_active=True)
+        JobAlert.objects.create(keyword="java", notify_email="other@example.com", is_active=True)
+
+        resp = self.client.post(
+            reverse("alert-cancel-all"),
+            {"notify_email": "user@example.com"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["cancelled_count"], 2)
+        self.assertEqual(JobAlert.objects.filter(notify_email__iexact="user@example.com").count(), 0)
+        self.assertEqual(JobAlert.objects.filter(notify_email__iexact="other@example.com").count(), 1)
+
+    def test_cancel_all_alerts_no_match(self):
+        resp = self.client.post(
+            reverse("alert-cancel-all"),
+            {"notify_email": "missing@example.com"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["cancelled_count"], 0)
+
     @patch("apps.alerts.services.matching.send_transactional_email")
     @patch("apps.alerts.services.rag.email_generation.get_llm_provider", return_value=None)
     @patch("apps.alerts.services.matching.retrieve_alert_jobs")
