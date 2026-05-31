@@ -5,6 +5,7 @@ from apps.jobs.services.job_labels import format_location_display
 
 from ...models import JobAlert
 from .email_generation import AlertEmailContent, build_alert_job_url
+from .content_helpers import derive_fallback_job_reason
 from .job_context import format_user_alert_preferences, get_alert_query_label
 
 
@@ -24,8 +25,7 @@ def _source_label(source: str) -> str:
 def _job_match_note(content: AlertEmailContent, index: int, job: JobPosting, query: str) -> str:
     if index < len(content.job_match_notes) and content.job_match_notes[index].strip():
         return content.job_match_notes[index].strip()
-    title = job.title or "This role"
-    return f"Related to your \"{query}\" alert through the title and listed responsibilities at {job.company_name or 'the company'}."
+    return derive_fallback_job_reason(job, query)
 
 
 def compose_alert_email_html(
@@ -39,7 +39,7 @@ def compose_alert_email_html(
     prefs = format_user_alert_preferences(alert)
 
     signals_html = ""
-    if content.key_signals:
+    if content.show_key_signals and content.key_signals:
         signal_items = "".join(
             f'<li style="margin:0 0 8px 0;color:#334155;">{_esc(item)}</li>'
             for item in content.key_signals
@@ -161,7 +161,7 @@ def compose_alert_email_text(
 
     lines.extend(["", "Why these jobs match", content.summary, ""])
 
-    if content.key_signals:
+    if content.show_key_signals and content.key_signals:
         lines.append("Key Match Signals")
         for item in content.key_signals:
             lines.append(f"• {item}")

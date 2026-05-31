@@ -5,16 +5,14 @@ from django.utils import timezone
 
 from apps.alerts.models import JobAlert
 from apps.alerts.services.matching import _send_alert_email, process_job_alerts
+from apps.alerts.services.rag.content_helpers import is_quality_signal
 from apps.alerts.services.rag.email_generation import (
-    AlertEmailContent,
     build_alert_job_url,
     build_alert_subject,
     build_fallback_content,
     compose_alert_email,
-    compose_alert_email_body,
     generate_alert_email_content,
 )
-from apps.alerts.services.rag.job_context import parse_llm_response
 from apps.alerts.services.rag.llm.gemini_provider import GeminiLLMProvider
 from apps.jobs.models import JobPosting
 
@@ -22,6 +20,20 @@ _TECH_DESC = (
     "Python backend developer building REST APIs, Django services, and cloud deployments. "
     "Requires Python, SQL, and distributed systems experience."
 )
+
+
+def _json_llm_response(job_id: int) -> str:
+    return f"""{{
+      "summary": "These roles align with your backend developer alert because they emphasize API development, Python services, and distributed backend systems.",
+      "key_signals": [
+        "API and backend service development",
+        "Python and distributed systems",
+        "Cloud deployment experience"
+      ],
+      "job_reasons": {{
+        "{job_id}": "This role fits your backend developer alert because it focuses on Python REST APIs and Django backend services at Acme."
+      }}
+    }}"""
 
 
 class RagEmailGenerationTests(TestCase):
@@ -60,52 +72,21 @@ class RagEmailGenerationTests(TestCase):
         self.assertEqual(provider.model, "gemini-2.0-flash")
         self.assertEqual(provider.api_key, "test-gemini-key")
 
-    def test_parse_llm_response_summary_format(self):
-        raw = (
-            "SUMMARY:\n"
-            "JobSense AI identified backend engineering opportunities aligned with your backend developer alert.\n\n"
-            "KEY_SIGNALS:\n"
-            "- API and backend service development\n"
-            "- Python and SQL experience\n\n"
-            "JOB_NOTES:\n"
-            "1. Backend engineer role at Acme with Python API focus\n"
-        )
-        parsed = parse_llm_response(raw)
-        self.assertIn("backend developer", parsed.summary.lower())
-        self.assertEqual(len(parsed.key_signals), 2)
-        self.assertEqual(len(parsed.job_notes), 1)
-
-    def test_parse_rejects_exaggerated_summary(self):
-        raw = (
-            "SUMMARY:\n"
-            "This is your perfect match for a dream job.\n\n"
-            "KEY_SIGNALS:\n"
-            "- Great role\n"
-        )
-        parsed = parse_llm_response(raw)
-        self.assertEqual(parsed.summary, "")
-        self.assertEqual(len(parsed.key_signals), 1)
-
     @override_settings(LLM_PROVIDER="")
     def test_fallback_when_provider_not_configured(self):
         content = generate_alert_email_content(self.alert, [self.job])
         self.assertFalse(content.used_rag)
         self.assertIn("backend developer", content.summary.lower())
         self.assertNotIn("search_mode", content.summary.lower())
+        self.assertNotIn("share recurring themes across title", content.summary.lower())
+        for signal in content.key_signals:
+            self.assertTrue(is_quality_signal(signal) or signal.startswith("Role-relevant"))
 
-    def test_successful_rag_generation(self):
+    def test_successful_rag_generation_json(self):
         mock_provider = MagicMock()
         mock_provider.provider_name = "openai"
         mock_provider.is_available.return_value = True
-        mock_provider.generate.return_value = (
-            "SUMMARY:\n"
-            "JobSense AI identified backend engineering opportunities for your backend developer alert.\n\n"
-            "KEY_SIGNALS:\n"
-            "- API and backend service development\n"
-            "- Python and distributed systems\n\n"
-            "JOB_NOTES:\n"
-            "1. Python Backend Engineer at Acme emphasizes backend APIs\n"
-        )
+        mock_provider.generate.return_value = _json_llm_response(self.job.id)
 
         with patch(
             "apps.alerts.services.rag.email_generation.get_llm_provider",
@@ -114,9 +95,11 @@ class RagEmailGenerationTests(TestCase):
             content = generate_alert_email_content(self.alert, [self.job])
 
         self.assertTrue(content.used_rag)
-        self.assertEqual(content.provider, "openai")
         self.assertIn("backend developer", content.summary.lower())
-        self.assertGreaterEqual(len(content.key_signals), 1)
+        self.assertGreaterEqual(len(content.key_signals), 2)
+        self.assertTrue(all(is_quality_signal(s) for s in content.key_signals[:3]))
+        self.assertIn("backend developer", content.job_match_notes[0].lower())
+        self.assertNotIn("through the title and listed responsibilities", content.job_match_notes[0].lower())
 
     def test_provider_failure_falls_back(self):
         mock_provider = MagicMock()
@@ -149,14 +132,7 @@ class RagEmailGenerationTests(TestCase):
         mock_provider = MagicMock()
         mock_provider.provider_name = "gemini"
         mock_provider.is_available.return_value = True
-        mock_provider.generate.return_value = (
-            "SUMMARY:\n"
-            "These jobs align with your backend developer alert.\n\n"
-            "KEY_SIGNALS:\n"
-            "- Backend APIs\n\n"
-            "JOB_NOTES:\n"
-            "1. Strong Python backend fit at Acme\n"
-        )
+        mock_provider.generate.return_value = _json_llm_response(self.job.id)
 
         with patch(
             "apps.alerts.services.rag.email_generation.get_llm_provider",
@@ -183,8 +159,7 @@ class RagEmailGenerationTests(TestCase):
         self.assertIn("Python Backend Engineer", text_body)
         self.assertIn("/api/tracking/alert-click/", html_body)
         self.assertNotIn("search_mode", html_body)
-        self.assertIn("Why these jobs match", html_body)
-        self.assertIn("View job", html_body)
+        self.assertNotIn("through the title and listed responsibilities", html_body.lower())
 
     @override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
     @patch("apps.alerts.services.matching.send_transactional_email")

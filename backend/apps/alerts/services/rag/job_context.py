@@ -1,3 +1,4 @@
+import json
 import re
 from dataclasses import dataclass, field
 
@@ -9,6 +10,14 @@ from apps.jobs.services.job_labels import (
 )
 
 from ...models import JobAlert
+from .content_helpers import (
+    derive_fallback_job_reason,
+    derive_fallback_signals,
+    derive_fallback_summary,
+    filter_key_signals,
+    normalize_phrase,
+    resolve_key_signals_for_email,
+)
 
 _BANNED_PHRASES = (
     "perfect match",
@@ -17,83 +26,10 @@ _BANNED_PHRASES = (
     "best job ever",
 )
 
-_STOPWORDS = frozenset(
-    {
-        "and",
-        "the",
-        "for",
-        "with",
-        "you",
-        "your",
-        "our",
-        "are",
-        "was",
-        "were",
-        "will",
-        "this",
-        "that",
-        "from",
-        "have",
-        "has",
-        "job",
-        "jobs",
-        "role",
-        "roles",
-        "work",
-        "team",
-        "using",
-        "use",
-        "all",
-        "any",
-        "can",
-        "may",
-        "not",
-        "but",
-        "into",
-        "over",
-        "such",
-        "their",
-        "they",
-        "them",
-        "who",
-        "what",
-        "when",
-        "where",
-        "how",
-        "about",
-        "more",
-        "other",
-        "than",
-        "then",
-        "also",
-        "able",
-        "required",
-        "requirements",
-        "experience",
-        "years",
-        "year",
-        "level",
-        "senior",
-        "junior",
-        "mid",
-        "full",
-        "time",
-        "based",
-        "including",
-        "within",
-        "across",
-        "through",
-        "during",
-        "while",
-        "each",
-        "both",
-        "between",
-        "well",
-        "new",
-        "one",
-        "two",
-        "three",
-    }
+_GENERIC_SUMMARY_PATTERNS = (
+    "share recurring themes across title",
+    "we found jobs that may interest you",
+    "these listings share recurring themes",
 )
 
 
@@ -102,6 +38,7 @@ class ParsedLlmEmail:
     summary: str = ""
     key_signals: list[str] = field(default_factory=list)
     job_notes: list[str] = field(default_factory=list)
+    job_reasons: dict[str, str] = field(default_factory=dict)
 
 
 def get_alert_query_label(alert: JobAlert) -> str:
@@ -160,7 +97,8 @@ def format_jobs_for_context(jobs: list[JobPosting], *, max_jobs: int = 20) -> st
             summary = summary[:317].rstrip() + "..."
 
         lines = [
-            f"{index}. Title: {job.title or 'Untitled'}",
+            f"{index}. job_id: {job.id}",
+            f"   Title: {job.title or 'Untitled'}",
             f"   Company: {job.company_name or 'Not specified'}",
         ]
         if location:
@@ -176,16 +114,87 @@ def format_jobs_for_context(jobs: list[JobPosting], *, max_jobs: int = 20) -> st
     return "\n\n".join(blocks)
 
 
-def parse_llm_response(raw: str) -> ParsedLlmEmail:
+def parse_llm_response(raw: str, jobs: list[JobPosting] | None = None) -> ParsedLlmEmail:
     text = (raw or "").strip()
     if not text:
         return ParsedLlmEmail()
 
-    upper = text.upper()
-    summary = ""
-    key_signals: list[str] = []
-    job_notes: list[str] = []
+    json_parsed = _parse_llm_json(text, jobs or [])
+    if json_parsed.summary or json_parsed.key_signals or json_parsed.job_reasons:
+        return json_parsed
 
+    return _parse_legacy_sections(text)
+
+
+def build_job_match_notes(
+    jobs: list[JobPosting],
+    *,
+    query: str,
+    job_reasons: dict[str, str] | None = None,
+    ordered_notes: list[str] | None = None,
+) -> list[str]:
+    """Resolve per-job match notes in job list order."""
+    reasons = job_reasons or {}
+    notes = ordered_notes or []
+    result: list[str] = []
+    for index, job in enumerate(jobs):
+        key = str(job.id)
+        if key in reasons and normalize_phrase(reasons[key]):
+            result.append(normalize_phrase(reasons[key]))
+        elif index < len(notes) and normalize_phrase(notes[index]):
+            result.append(normalize_phrase(notes[index]))
+        else:
+            result.append(derive_fallback_job_reason(job, query))
+    return result
+
+
+def _parse_llm_json(raw: str, jobs: list[JobPosting]) -> ParsedLlmEmail:
+    payload_text = _extract_json_object(raw)
+    if not payload_text:
+        return ParsedLlmEmail()
+
+    try:
+        data = json.loads(payload_text)
+    except json.JSONDecodeError:
+        return ParsedLlmEmail()
+
+    if not isinstance(data, dict):
+        return ParsedLlmEmail()
+
+    summary = _sanitize_summary(str(data.get("summary") or ""))
+    raw_signals = data.get("key_signals") or data.get("keySignals") or []
+    key_signals = filter_key_signals(
+        [str(item) for item in raw_signals] if isinstance(raw_signals, list) else []
+    )
+
+    job_reasons: dict[str, str] = {}
+    raw_reasons = data.get("job_reasons") or data.get("jobReasons") or {}
+    if isinstance(raw_reasons, dict):
+        valid_ids = {str(job.id) for job in jobs}
+        for job_id, reason in raw_reasons.items():
+            key = str(job_id).strip()
+            if key in valid_ids:
+                cleaned = normalize_phrase(str(reason or ""))
+                if cleaned and not _is_generic_job_reason(cleaned):
+                    job_reasons[key] = cleaned
+
+    ordered_notes: list[str] = []
+    if not job_reasons and jobs:
+        for job in jobs:
+            key = str(job.id)
+            if isinstance(raw_reasons, dict) and key in raw_reasons:
+                ordered_notes.append(normalize_phrase(str(raw_reasons[key])))
+
+    return ParsedLlmEmail(
+        summary=summary,
+        key_signals=key_signals,
+        job_notes=ordered_notes,
+        job_reasons=job_reasons,
+    )
+
+
+def _parse_legacy_sections(text: str) -> ParsedLlmEmail:
+    upper = text.upper()
     summary_key = "SUMMARY:" if "SUMMARY:" in upper else "EXPLANATION:"
     signals_key = "KEY_SIGNALS:" if "KEY_SIGNALS:" in upper else None
     if signals_key is None and "HIGHLIGHTS:" in upper:
@@ -205,11 +214,13 @@ def parse_llm_response(raw: str) -> ParsedLlmEmail:
     first_section = section_starts[0][0] if section_starts else len(text)
     summary = _sanitize_summary(text[summary_start:first_section].strip())
 
+    key_signals: list[str] = []
+    job_notes: list[str] = []
     for idx, (start, key) in enumerate(section_starts):
         end = section_starts[idx + 1][0] if idx + 1 < len(section_starts) else len(text)
         block = text[start + len(key) : end].strip()
         if key in {"KEY_SIGNALS:", "HIGHLIGHTS:"}:
-            key_signals = _parse_bullets(block, max_items=5)
+            key_signals = filter_key_signals(_parse_bullets(block, max_items=8))
         elif key == "JOB_NOTES:":
             job_notes = _parse_numbered_notes(block)
 
@@ -220,44 +231,32 @@ def parse_llm_response(raw: str) -> ParsedLlmEmail:
     )
 
 
-def derive_fallback_signals(jobs: list[JobPosting], *, max_signals: int = 4) -> list[str]:
-    """Extract recurring themes from job text without hardcoded role rules."""
-    counts: dict[str, int] = {}
-    for job in jobs:
-        haystack = " ".join(
-            filter(
-                None,
-                [
-                    job.title or "",
-                    job.normalized_title or "",
-                    job.description_clean or "",
-                    job.category_normalized or "",
-                ],
-            )
-        ).lower()
-        for token in set(re.findall(r"[a-z0-9+#./-]{3,}", haystack)):
-            if token in _STOPWORDS or token.isdigit():
-                continue
-            counts[token] = counts.get(token, 0) + 1
+def _extract_json_object(raw: str) -> str:
+    text = raw.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\s*```$", "", text)
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return ""
+    return text[start : end + 1]
 
-    ranked = sorted(counts.items(), key=lambda item: (-item[1], -len(item[0]), item[0]))
-    signals: list[str] = []
-    for token, count in ranked:
-        if count < 2 and len(jobs) > 2:
-            continue
-        label = token.replace("-", " ").replace("/", " ").strip()
-        signals.append(label.title())
-        if len(signals) >= max_signals:
-            break
 
-    if not signals and jobs:
-        title = (jobs[0].title or "matching roles").strip()
-        signals.append(f"Roles similar to {title}")
-    return signals[:max_signals]
+def _is_generic_job_reason(reason: str) -> bool:
+    lowered = reason.lower()
+    generic_markers = (
+        "related to your",
+        "through the title and listed responsibilities",
+        "through the title and responsibilities",
+    )
+    return any(marker in lowered for marker in generic_markers)
 
 
 def _sanitize_summary(text: str) -> str:
-    cleaned = (text or "").strip()
+    cleaned = normalize_phrase(text)
+    if not cleaned:
+        return ""
     lowered = cleaned.lower()
     for phrase in _BANNED_PHRASES:
         if phrase in lowered:
@@ -265,6 +264,9 @@ def _sanitize_summary(text: str) -> str:
     banned_internal = ("search_mode", "semantic", "keyword mode", "additional filters")
     if any(term in lowered for term in banned_internal):
         return ""
+    for pattern in _GENERIC_SUMMARY_PATTERNS:
+        if pattern in lowered:
+            return ""
     return cleaned
 
 
@@ -284,3 +286,19 @@ def _parse_numbered_notes(block: str) -> list[str]:
         if cleaned:
             notes.append(cleaned)
     return notes
+
+
+# Re-export for backward compatibility
+__all__ = [
+    "ParsedLlmEmail",
+    "build_alert_query",
+    "build_job_match_notes",
+    "build_llm_alert_context",
+    "derive_fallback_signals",
+    "derive_fallback_summary",
+    "format_jobs_for_context",
+    "format_user_alert_preferences",
+    "get_alert_query_label",
+    "parse_llm_response",
+    "resolve_key_signals_for_email",
+]

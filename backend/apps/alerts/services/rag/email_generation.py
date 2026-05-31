@@ -6,9 +6,11 @@ from django.conf import settings
 from apps.jobs.models import JobPosting
 
 from ...models import JobAlert
+from .content_helpers import derive_fallback_signals, resolve_key_signals_for_email
 from .job_context import (
+    build_job_match_notes,
     build_llm_alert_context,
-    derive_fallback_signals,
+    derive_fallback_summary,
     format_jobs_for_context,
     get_alert_query_label,
     parse_llm_response,
@@ -24,6 +26,7 @@ class AlertEmailContent:
     summary: str = ""
     key_signals: list[str] = field(default_factory=list)
     job_match_notes: list[str] = field(default_factory=list)
+    show_key_signals: bool = True
     used_rag: bool = False
     provider: str | None = None
 
@@ -44,17 +47,16 @@ def build_alert_subject(alert: JobAlert, job_count: int) -> str:
 
 def build_fallback_content(alert: JobAlert, jobs: list[JobPosting]) -> AlertEmailContent:
     query = get_alert_query_label(alert)
-    count = len(jobs)
-    noun = "position" if count == 1 else "positions"
-    summary = (
-        f"JobSense AI identified {count} {noun} aligned with your interest in "
-        f"\"{query}\". These listings share recurring themes across title, company context, "
-        f"and role descriptions from your alert results."
-    )
+    raw_signals = derive_fallback_signals(jobs, query=query)
+    display_signals, show_signals = resolve_key_signals_for_email(raw_signals)
+    summary = derive_fallback_summary(query, jobs, raw_signals)
+    job_notes = build_job_match_notes(jobs, query=query)
+
     return AlertEmailContent(
         summary=summary,
-        key_signals=derive_fallback_signals(jobs),
-        job_match_notes=[],
+        key_signals=display_signals,
+        job_match_notes=job_notes,
+        show_key_signals=show_signals,
         used_rag=False,
         provider=None,
     )
@@ -68,6 +70,8 @@ def generate_alert_email_content(alert: JobAlert, jobs: list[JobPosting]) -> Ale
     fallback = build_fallback_content(alert, jobs)
     if not jobs:
         return fallback
+
+    query = get_alert_query_label(alert)
 
     try:
         provider = get_llm_provider()
@@ -87,13 +91,25 @@ def generate_alert_email_content(alert: JobAlert, jobs: list[JobPosting]) -> Ale
             job_count=len(jobs),
         )
         raw = provider.generate(system=SYSTEM_PROMPT, user=user_prompt)
-        parsed = parse_llm_response(raw)
+        parsed = parse_llm_response(raw, jobs=jobs)
+
         if not parsed.summary:
             return fallback
+
+        raw_signals = parsed.key_signals or derive_fallback_signals(jobs, query=query)
+        display_signals, show_signals = resolve_key_signals_for_email(raw_signals)
+        job_notes = build_job_match_notes(
+            jobs,
+            query=query,
+            job_reasons=parsed.job_reasons,
+            ordered_notes=parsed.job_notes,
+        )
+
         return AlertEmailContent(
             summary=parsed.summary,
-            key_signals=parsed.key_signals[:5] or derive_fallback_signals(jobs),
-            job_match_notes=parsed.job_notes[: len(jobs)],
+            key_signals=display_signals,
+            job_match_notes=job_notes,
+            show_key_signals=show_signals,
             used_rag=True,
             provider=provider.provider_name,
         )
