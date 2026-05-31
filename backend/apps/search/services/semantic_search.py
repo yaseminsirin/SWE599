@@ -16,6 +16,7 @@ from .retrieval_rerank import (
     core_query_terms,
     filter_relevant_semantic_results,
     rerank_semantic_candidates,
+    retrieval_query_text,
 )
 from .vector_query import cosine_distance_annotation, semantic_score_from_row
 
@@ -69,8 +70,15 @@ def semantic_search_jobs(
     Large mixed corpora (e.g. USAJOBS + Adzuna) can return unrelated nearest neighbors;
     we first restrict pgvector to jobs mentioning core query terms, then rerank.
     """
-    embed_result = embed_text_with_metadata(query, task_type="RETRIEVAL_QUERY")
-    log_embedding_usage(embed_result, context="semantic_search_query", text_preview=query)
+    terms = _query_prefilter_terms(query)
+    retrieval_text = retrieval_query_text(query)
+
+    embed_result = embed_text_with_metadata(retrieval_text, task_type="RETRIEVAL_QUERY")
+    log_embedding_usage(
+        embed_result,
+        context="semantic_search_query",
+        text_preview=f"{query} -> {retrieval_text}",
+    )
 
     if is_embedding_strict_mode() and (
         embed_result.fallback_triggered or embed_result.provider_substituted

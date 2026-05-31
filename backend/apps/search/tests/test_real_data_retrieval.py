@@ -11,6 +11,7 @@ from apps.search.services.retrieval_rerank import (
     filter_relevant_semantic_results,
     is_relevant_semantic_match,
     rerank_semantic_candidates,
+    retrieval_query_text,
 )
 from apps.search.services.semantic_search import semantic_search_jobs
 from django.utils import timezone
@@ -136,6 +137,17 @@ class RealDataRetrievalTests(TestCase):
         filtered = filter_relevant_semantic_results(long_query, candidates)
         self.assertEqual(len(filtered), 1)
         self.assertEqual(filtered[0]["job"].id, self.real_job.id)
+
+    def test_retrieval_query_text_shortens_long_natural_language(self):
+        long_query = (
+            "Python developer with backend experience building REST APIs, "
+            "web services, and data-driven applications"
+        )
+        compact = retrieval_query_text(long_query)
+        self.assertIn("python", compact)
+        self.assertIn("developer", compact)
+        self.assertLess(len(compact.split()), len(long_query.split()))
+        self.assertEqual(retrieval_query_text("python developer"), "developer python")
 
     def test_query_term_prefilter_narrows_pgvector_scope(self):
         from apps.search.services.job_quality import narrow_jobs_by_terms

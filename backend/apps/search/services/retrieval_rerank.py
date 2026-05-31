@@ -140,6 +140,10 @@ NON_TECH_JOB_PHRASES = (
 )
 
 
+def content_tokens(text: str) -> set[str]:
+    return {token for token in _tokenize(text) if len(token) >= 3 and token not in SEARCH_STOPWORDS}
+
+
 def core_query_terms(query: str, *, max_terms: int = 6) -> set[str]:
     """Focus lexical/relevance checks on the most specific query terms."""
     terms = content_tokens(query)
@@ -148,6 +152,25 @@ def core_query_terms(query: str, *, max_terms: int = 6) -> set[str]:
     if len(terms) <= max_terms:
         return terms
     return set(sorted(terms, key=lambda token: (-len(token), token))[:max_terms])
+
+
+def retrieval_query_text(query: str) -> str:
+    """
+    Compact text for embedding / pgvector retrieval.
+
+    Long natural-language queries embed far from short job-title vectors; use core
+    terms so "Python developer with backend experience …" behaves like "python developer".
+    """
+    stripped = (query or "").strip()
+    if not stripped:
+        return ""
+    word_count = len(stripped.split())
+    terms = core_query_terms(stripped)
+    if word_count > 5 and terms:
+        return " ".join(sorted(terms))
+    if len(terms) >= 2:
+        return " ".join(sorted(terms))
+    return stripped
 
 
 def _job_text_blob(job: JobPosting) -> str:
@@ -177,10 +200,6 @@ def is_domain_mismatch(query: str, job: JobPosting) -> bool:
         return False
 
     return any(phrase in blob for phrase in NON_TECH_JOB_PHRASES)
-
-
-def content_tokens(text: str) -> set[str]:
-    return {token for token in _tokenize(text) if len(token) >= 3 and token not in SEARCH_STOPWORDS}
 
 
 def compute_lexical_score(query: str, job: JobPosting) -> float:
@@ -313,12 +332,5 @@ def filter_relevant_semantic_results(
     if filtered:
         return filtered
 
-    # Long natural-language queries can over-filter; keep top semantic matches
-    # that are not obvious cross-domain noise.
-    fallback = [
-        item
-        for item in results
-        if not is_domain_mismatch(query, item["job"])
-        and float(item.get("semantic_score", 0.0)) >= 0.40
-    ]
-    return fallback
+    # Query-term prefilter already removed cross-domain noise; keep reranked matches.
+    return [item for item in results if not is_domain_mismatch(query, item["job"])]
