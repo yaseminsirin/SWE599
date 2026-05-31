@@ -82,11 +82,13 @@ class AlertsTests(APITestCase):
         self.assertEqual(resp.status_code, 400)
         self.assertIn("notify_email", resp.data)
 
+    @patch("apps.alerts.services.matching.send_transactional_email")
     @patch("apps.alerts.services.rag.email_generation.get_llm_provider", return_value=None)
     @patch("apps.alerts.services.matching.retrieve_alert_jobs")
     def test_alert_processing_matches_and_prevents_duplicate_delivery(
-        self, mock_retrieve, _mock_llm
+        self, mock_retrieve, _mock_llm, mock_brevo
     ):
+        mock_brevo.return_value = {"messageId": "test-id"}
         alert = JobAlert.objects.create(
             keyword="python",
             is_active=True,

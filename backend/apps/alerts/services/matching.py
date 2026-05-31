@@ -1,12 +1,16 @@
+import logging
+
 from django.conf import settings
-from django.core.mail import send_mail
 from django.utils import timezone
 
 from apps.jobs.models import JobPosting
 
 from ..models import AlertDeliveryLog, JobAlert
 from .alert_retrieval import retrieve_alert_jobs
+from .brevo_email import send_transactional_email
 from .rag.email_generation import compose_alert_email_body, generate_alert_email_content
+
+logger = logging.getLogger(__name__)
 
 
 def _alert_recipient(alert: JobAlert) -> str:
@@ -17,13 +21,20 @@ def _send_alert_email(alert: JobAlert, jobs: list[JobPosting], *, recipient: str
     subject = f"Job alert: {alert.name or alert.keyword or 'New matches'}"
     email_content = generate_alert_email_content(alert, jobs)
     body = compose_alert_email_body(email_content, jobs, alert=alert)
-    send_mail(
-        subject=subject,
-        message=body,
-        from_email=settings.DEFAULT_FROM_EMAIL,
-        recipient_list=[recipient],
-        fail_silently=False,
-    )
+    try:
+        send_transactional_email(
+            recipient=recipient,
+            subject=subject,
+            body=body,
+        )
+    except Exception as exc:
+        logger.exception(
+            "Alert email delivery failed for alert %s to %s: %s",
+            alert.id,
+            recipient,
+            exc,
+        )
+        raise
     return {
         "used_rag": email_content.used_rag,
         "provider": email_content.provider,

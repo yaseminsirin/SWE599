@@ -1,6 +1,5 @@
 from unittest.mock import MagicMock, patch
 
-from django.core import mail
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
@@ -126,10 +125,13 @@ class RagEmailGenerationTests(TestCase):
         self.assertEqual(content.explanation, fallback.explanation)
 
     @override_settings(
-        EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
+        BREVO_API_KEY="test-brevo-key",
+        DEFAULT_FROM_EMAIL="alerts@example.com",
         SITE_URL="http://localhost:8000",
     )
-    def test_alert_email_uses_tracking_links(self):
+    @patch("apps.alerts.services.matching.send_transactional_email")
+    def test_alert_email_uses_tracking_links(self, mock_brevo):
+        mock_brevo.return_value = {"messageId": "test-id"}
         mock_provider = MagicMock()
         mock_provider.provider_name = "gemini"
         mock_provider.is_available.return_value = True
@@ -147,8 +149,9 @@ class RagEmailGenerationTests(TestCase):
             meta = _send_alert_email(self.alert, [self.job], recipient="alerts@example.com")
 
         self.assertTrue(meta["used_rag"])
-        self.assertEqual(len(mail.outbox), 1)
-        body = mail.outbox[0].body
+        mock_brevo.assert_called_once()
+        call_kwargs = mock_brevo.call_args.kwargs
+        body = call_kwargs["body"]
         self.assertIn("Python backend alert", body)
         self.assertIn("Matching jobs:", body)
         expected_url = build_alert_job_url(alert=self.alert, job=self.job)
@@ -164,9 +167,11 @@ class RagEmailGenerationTests(TestCase):
         self.assertIn("/api/tracking/alert-click/", body)
 
     @override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
+    @patch("apps.alerts.services.matching.send_transactional_email")
     @patch("apps.alerts.services.matching.retrieve_alert_jobs")
-    def test_process_job_alerts_never_fails_on_llm_error(self, mock_retrieve):
+    def test_process_job_alerts_never_fails_on_llm_error(self, mock_retrieve, mock_brevo):
         mock_retrieve.return_value = [self.job]
+        mock_brevo.return_value = {"messageId": "test-id"}
         mock_provider = MagicMock()
         mock_provider.is_available.return_value = True
         mock_provider.generate.side_effect = RuntimeError("provider unavailable")
@@ -180,4 +185,4 @@ class RagEmailGenerationTests(TestCase):
         self.assertEqual(summary["alerts_notified"], 1)
         self.assertEqual(summary["fallback_emails"], 1)
         self.assertEqual(summary["rag_emails"], 0)
-        self.assertEqual(len(mail.outbox), 1)
+        mock_brevo.assert_called_once()

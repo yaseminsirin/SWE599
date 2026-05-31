@@ -75,18 +75,23 @@ Set these in the Droplet `.env` file (never commit `.env`). Grouped for App Plat
 | `REMOTIVE_BASE_URL` | No |
 | `INGEST_PAGE_SIZE_*` / `INGEST_MAX_PAGES_*` | No |
 
-### Email
+### Email (Brevo REST API — production)
+
+Alert emails use the Brevo Transactional Email API (HTTPS), not SMTP — works on DigitalOcean where outbound SMTP ports are blocked.
 
 | Variable | Production value |
 |----------|------------------|
-| `EMAIL_BACKEND` | e.g. `django.core.mail.backends.smtp.EmailBackend` |
-| `EMAIL_HOST` | SMTP host (SendGrid, Mailgun, DO, etc.) |
-| `EMAIL_PORT` | `587` |
-| `EMAIL_HOST_USER` | SMTP user |
-| `EMAIL_HOST_PASSWORD` | SMTP password |
-| `EMAIL_USE_TLS` | `true` |
-| `DEFAULT_FROM_EMAIL` | Verified sender address |
-| `SITE_URL` | Public URL, e.g. `https://jobs.example.com` |
+| `BREVO_API_KEY` | Brevo API key (Brevo → SMTP & API → API keys) |
+| `BREVO_API_TIMEOUT_SECONDS` | `30` (optional) |
+| `DEFAULT_FROM_EMAIL` | Verified sender in Brevo (e.g. `yaseminsirin322@gmail.com`) |
+| `SITE_URL` | Public URL, e.g. `http://104.248.113.186:8000` |
+
+```env
+BREVO_API_KEY=your-brevo-api-key
+BREVO_API_TIMEOUT_SECONDS=30
+DEFAULT_FROM_EMAIL=yaseminsirin322@gmail.com
+SITE_URL=http://104.248.113.186:8000
+```
 
 ### Semantic embeddings (production — do not change)
 
@@ -225,8 +230,8 @@ LLM_PROVIDER=gemini
 LLM_MODEL=gemini-2.0-flash
 GEMINI_API_KEY=<your-key-or-leave-empty-for-fallback>
 
-EMAIL_BACKEND=django.core.mail.backends.smtp.EmailBackend
-# ... SMTP settings ...
+BREVO_API_KEY=<your-brevo-api-key>
+DEFAULT_FROM_EMAIL=yaseminsirin322@gmail.com
 ```
 
 ### 5.4 Build and start

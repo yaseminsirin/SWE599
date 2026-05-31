@@ -202,3 +202,6 @@ LLM_PROVIDER = os.getenv("LLM_PROVIDER", "").strip().lower()
 LLM_MODEL = os.getenv("LLM_MODEL", "").strip()
 LLM_TIMEOUT_SECONDS = int(os.getenv("LLM_TIMEOUT_SECONDS", "30"))
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+
+BREVO_API_KEY = os.getenv("BREVO_API_KEY", "").strip()
+BREVO_API_TIMEOUT_SECONDS = int(os.getenv("BREVO_API_TIMEOUT_SECONDS", "30"))
