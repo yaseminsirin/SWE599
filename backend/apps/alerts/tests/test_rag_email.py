@@ -7,6 +7,7 @@ from apps.alerts.models import JobAlert
 from apps.alerts.services.matching import _send_alert_email, process_job_alerts
 from apps.alerts.services.rag.content_helpers import MIN_SIGNALS_TO_SHOW, is_quality_signal
 from apps.alerts.services.rag.email_generation import (
+    build_alert_apply_url,
     build_alert_job_url,
     build_alert_subject,
     build_fallback_content,
@@ -130,7 +131,7 @@ class RagEmailGenerationTests(TestCase):
         SITE_URL="http://localhost:8000",
     )
     @patch("apps.alerts.services.matching.send_transactional_email")
-    def test_alert_email_hides_garbage_and_uses_tracking(self, mock_brevo):
+    def test_alert_email_hides_garbage_and_uses_direct_listing_url(self, mock_brevo):
         mock_brevo.return_value = {"messageId": "test-id"}
         mock_provider = MagicMock()
         mock_provider.provider_name = "gemini"
@@ -146,9 +147,10 @@ class RagEmailGenerationTests(TestCase):
         self.assertTrue(meta["used_rag"])
         call_kwargs = mock_brevo.call_args.kwargs
         self.assertNotIn("position is", call_kwargs["html_body"].lower())
-        self.assertNotIn("https://example.com/rag-1", call_kwargs["html_body"])
-        expected_url = build_alert_job_url(alert=self.alert, job=self.job)
+        expected_url = build_alert_apply_url(alert=self.alert, job=self.job)
         self.assertIn(expected_url, call_kwargs["html_body"])
+        self.assertNotIn(build_alert_job_url(alert=self.alert, job=self.job), call_kwargs["html_body"])
+        self.assertIn('target="_blank"', call_kwargs["html_body"])
 
     def test_fallback_email_has_no_garbage_phrases(self):
         content = build_fallback_content(self.alert, [self.job])

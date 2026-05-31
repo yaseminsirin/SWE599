@@ -4,6 +4,7 @@ import logging
 from django.conf import settings
 
 from apps.jobs.models import JobPosting
+from apps.jobs.services.job_urls import resolve_external_job_url
 
 from ...models import JobAlert
 from .content_helpers import derive_taxonomy_signals, signals_ready_for_display
@@ -129,6 +130,21 @@ def generate_alert_email_content(alert: JobAlert, jobs: list[JobPosting]) -> Ale
 def build_alert_job_url(*, alert: JobAlert, job: JobPosting) -> str:
     base = getattr(settings, "SITE_URL", "http://localhost:8000").rstrip("/")
     return f"{base}/api/tracking/alert-click/{job.id}/?alert_id={alert.id}"
+
+
+def build_alert_apply_url(*, alert: JobAlert, job: JobPosting) -> str:
+    """
+    Link for View job in alert emails.
+
+    Prefer the original HTTPS listing URL — Gmail and other clients often block or
+    mishandle http://IP:8000 tracking redirects. Fall back to site search when
+    the stored listing URL is missing or a demo placeholder.
+    """
+    direct = resolve_external_job_url(job.job_url)
+    if direct:
+        return direct
+    base = getattr(settings, "SITE_URL", "http://localhost:8000").rstrip("/")
+    return f"{base}/search/"
 
 
 def compose_alert_email(

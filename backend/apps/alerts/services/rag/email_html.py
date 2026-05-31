@@ -4,12 +4,17 @@ from apps.jobs.models import JobPosting
 from apps.jobs.services.job_labels import format_location_display
 
 from ...models import JobAlert
-from .email_generation import AlertEmailContent, build_alert_job_url
+from .email_generation import AlertEmailContent, build_alert_apply_url
 from .job_context import format_user_alert_preferences, get_alert_query_label
 
 
 def _esc(value: str) -> str:
     return html.escape(value or "", quote=True)
+
+
+def _esc_href(url: str) -> str:
+    """Escape only characters that break HTML attributes; keep query strings intact."""
+    return (url or "").replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;")
 
 
 def _source_label(source: str) -> str:
@@ -66,7 +71,7 @@ def compose_alert_email_html(
             country=job.country,
             is_remote=job.is_remote,
         )
-        apply_url = build_alert_job_url(alert=alert, job=job)
+        apply_url = build_alert_apply_url(alert=alert, job=job)
         match_note = _job_match_note(content, index, job, query)
         job_cards.append(
             f"""
@@ -76,7 +81,13 @@ def compose_alert_email_html(
               <div style="font-size:14px;color:#475569;margin-bottom:4px;"><strong>Location:</strong> {_esc(location or "Not specified")}</div>
               <div style="font-size:14px;color:#475569;margin-bottom:10px;"><strong>Source:</strong> {_esc(_source_label(job.source))}</div>
               <div style="font-size:13px;color:#64748b;margin-bottom:14px;line-height:1.5;"><em>Why it matches:</em> {_esc(match_note)}</div>
-              <a href="{_esc(apply_url)}" style="display:inline-block;background:#4f46e5;color:#ffffff;text-decoration:none;padding:10px 16px;border-radius:8px;font-size:14px;font-weight:600;">View job</a>
+              <table role="presentation" cellspacing="0" cellpadding="0" style="margin:0;">
+                <tr>
+                  <td style="border-radius:8px;background:#4f46e5;">
+                    <a href="{_esc_href(apply_url)}" target="_blank" rel="noopener noreferrer" style="display:inline-block;background:#4f46e5;color:#ffffff;text-decoration:none;padding:10px 16px;border-radius:8px;font-size:14px;font-weight:600;">View job</a>
+                  </td>
+                </tr>
+              </table>
             </div>
             """
         )
@@ -181,7 +192,7 @@ def compose_alert_email_text(
             country=job.country,
             is_remote=job.is_remote,
         )
-        apply_url = build_alert_job_url(alert=alert, job=job)
+        apply_url = build_alert_apply_url(alert=alert, job=job)
         match_note = _job_match_note(content, index, job, query)
         lines.extend(
             [
