@@ -233,7 +233,6 @@
     params.set("page", String(page));
     params.set("page_size", String(PAGE_SIZE));
     params.set("q", values.query);
-    params.set("tech_only", "true");
     if (values.location) params.set("location", values.location);
     if (values.employment) params.set("employment_type", values.employment);
     if (values.remoteChecked) params.set("is_remote", "true");

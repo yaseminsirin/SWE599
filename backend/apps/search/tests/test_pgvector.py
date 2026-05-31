@@ -71,9 +71,11 @@ class PgvectorTests(TestCase):
         generate_job_embedding(self.job_python)
         generate_job_embedding(self.job_sales)
         results = semantic_search_jobs("python django backend", top_k=5)
-        self.assertGreaterEqual(len(results), 2)
+        self.assertGreaterEqual(len(results), 1)
         self.assertEqual(results[0]["job"].id, self.job_python.id)
         self.assertGreater(results[0]["semantic_score"], 0.0)
+        result_ids = {row["job"].id for row in results}
+        self.assertNotIn(self.job_sales.id, result_ids)
 
     def test_distance_to_similarity_clamped(self):
         self.assertAlmostEqual(distance_to_similarity(0.0), 1.0)

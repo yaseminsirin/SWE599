@@ -162,14 +162,14 @@ EMBEDDING_SLEEP_SECONDS = float(os.getenv("EMBEDDING_SLEEP_SECONDS", "0.5"))
 EMBEDDING_SOURCE_FILTER = os.getenv("EMBEDDING_SOURCE_FILTER", "").strip()
 _emb_tech = os.getenv("EMBEDDING_TECH_ONLY", "").strip().lower()
 EMBEDDING_TECH_ONLY = (
-    True if _emb_tech in {"1", "true", "yes"} else False if _emb_tech in {"0", "false", "no"} else None
+    True if _emb_tech in {"1", "true", "yes"} else False if _emb_tech in {"0", "false", "no"} else False
 )
 EMBEDDING_STOP_ON_QUOTA = os.getenv("EMBEDDING_STOP_ON_QUOTA", "true").lower() == "true"
 
 SEMANTIC_SEARCH_CANDIDATE_POOL = int(os.getenv("SEMANTIC_SEARCH_CANDIDATE_POOL", "100"))
 SEMANTIC_RERANK_WEIGHT_SEMANTIC = float(os.getenv("SEMANTIC_RERANK_WEIGHT_SEMANTIC", "0.7"))
 SEMANTIC_RERANK_WEIGHT_LEXICAL = float(os.getenv("SEMANTIC_RERANK_WEIGHT_LEXICAL", "0.3"))
-SEMANTIC_TECH_ONLY = os.getenv("SEMANTIC_TECH_ONLY", "true").lower() == "true"
+SEMANTIC_TECH_ONLY = os.getenv("SEMANTIC_TECH_ONLY", "false").lower() == "true"
 SEMANTIC_REAL_SOURCES_ONLY = os.getenv("SEMANTIC_REAL_SOURCES_ONLY", "true").lower() == "true"
 RANKING_WEIGHT_KEYWORD = float(os.getenv("RANKING_WEIGHT_KEYWORD", "0.5"))
 RANKING_WEIGHT_SEMANTIC = float(os.getenv("RANKING_WEIGHT_SEMANTIC", "0.3"))

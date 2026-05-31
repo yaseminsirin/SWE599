@@ -5,7 +5,13 @@ from django.test import TestCase, override_settings
 from apps.jobs.models import JobPosting
 from apps.jobs.services.demo_dataset import DEMO_SOURCE
 from apps.search.services.job_quality import apply_keyword_token_filter, is_quality_job, is_tech_related_job
-from apps.search.services.retrieval_rerank import compute_hybrid_score, compute_lexical_score, rerank_semantic_candidates
+from apps.search.services.retrieval_rerank import (
+    compute_hybrid_score,
+    compute_lexical_score,
+    filter_relevant_semantic_results,
+    is_relevant_semantic_match,
+    rerank_semantic_candidates,
+)
 from apps.search.services.semantic_search import semantic_search_jobs
 from django.utils import timezone
 
@@ -67,6 +73,48 @@ class RealDataRetrievalTests(TestCase):
         reranked = rerank_semantic_candidates("python backend developer", candidates)
         self.assertEqual(reranked[0]["job"].id, self.real_job.id)
         self.assertGreater(reranked[0]["hybrid_score"], reranked[1]["hybrid_score"])
+
+    def test_irrelevant_truck_driver_filtered_for_python_query(self):
+        truck_job = JobPosting.objects.create(
+            source="adzuna",
+            source_job_id="truck-1",
+            title="Regional Truck Driver Owner Operator",
+            company_name="UACL Logistics",
+            description_clean=(
+                "Seeking Class A CDL Van and Flatbed Owner Operators. "
+                "Sign-on bonus available for qualified drivers with six months experience."
+            ),
+            category_normalized="Logistics & Warehouse Jobs",
+            job_url="https://example.com/truck-1",
+            content_hash="truck-hash-1",
+            posted_at=timezone.now(),
+        )
+        candidates = [
+            {"job": truck_job, "semantic_score": 0.82, "lexical_score": 0.0, "hybrid_score": 0.57},
+            {
+                "job": self.real_job,
+                "semantic_score": 0.74,
+                "lexical_score": compute_lexical_score("python backend developer", self.real_job),
+                "hybrid_score": compute_hybrid_score(
+                    semantic_score=0.74,
+                    lexical_score=compute_lexical_score("python backend developer", self.real_job),
+                ),
+            },
+        ]
+        filtered = filter_relevant_semantic_results(
+            "Python developer with backend experience building REST APIs and web services",
+            candidates,
+        )
+        self.assertEqual(len(filtered), 1)
+        self.assertEqual(filtered[0]["job"].id, self.real_job.id)
+        self.assertFalse(
+            is_relevant_semantic_match(
+                "python developer",
+                truck_job,
+                hybrid_score=0.57,
+                lexical_score=0.0,
+            )
+        )
 
     @override_settings(SEMANTIC_TECH_ONLY=True)
     @patch("apps.search.services.semantic_search.embed_text")

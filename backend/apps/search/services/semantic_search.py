@@ -11,7 +11,7 @@ from .embeddings.factory import (
     log_embedding_usage,
 )
 from .job_quality import get_searchable_job_queryset, is_quality_job
-from .retrieval_rerank import rerank_semantic_candidates
+from .retrieval_rerank import filter_relevant_semantic_results, rerank_semantic_candidates
 from .vector_query import cosine_distance_annotation, semantic_score_from_row
 
 
@@ -72,7 +72,8 @@ def semantic_search_jobs(
         )
 
     reranked = rerank_semantic_candidates(query, candidates)
-    return reranked[:top_k]
+    relevant = filter_relevant_semantic_results(query, reranked)
+    return relevant[:top_k]
 
 
 def get_jobs_missing_embeddings(*, limit: int = 200, source: str | None = None) -> list:

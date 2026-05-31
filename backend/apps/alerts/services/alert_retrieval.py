@@ -61,7 +61,7 @@ def _semantic_ranked_jobs(alert: JobAlert, *, pool_size: int = 100) -> list[JobP
     if not query:
         return []
 
-    scored = semantic_search_jobs(query, top_k=pool_size, tech_only=True)
+    scored = semantic_search_jobs(query, top_k=pool_size, tech_only=False)
     jobs: list[JobPosting] = []
     for item in scored:
         job = item["job"]
@@ -74,7 +74,7 @@ def _keyword_ranked_jobs(alert: JobAlert, *, pool_size: int = 100) -> list[JobPo
     queryset = get_searchable_job_queryset(
         real_sources_only=True,
         exclude_demo=True,
-        tech_only=True,
+        tech_only=False,
     )
     params = _filter_params_from_alert(alert)
     if alert.keyword:

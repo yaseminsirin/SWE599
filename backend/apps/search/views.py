@@ -46,8 +46,9 @@ class SemanticJobSearchAPIView(APIView):
 
         top_k = int(request.query_params.get("top_k", 50))
         tech_only = request.query_params.get("tech_only", "").strip().lower()
-        tech_filter = True if tech_only in {"1", "true", "yes"} else None
-        if tech_only in {"0", "false", "no"}:
+        if tech_only in {"1", "true", "yes"}:
+            tech_filter = True
+        else:
             tech_filter = False
         try:
             scored_results = semantic_search_jobs(query, top_k=top_k, tech_only=tech_filter)
