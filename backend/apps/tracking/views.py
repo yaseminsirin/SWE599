@@ -1,13 +1,16 @@
-from django.shortcuts import get_object_or_404, redirect
+from django.conf import settings
+from django.shortcuts import get_object_or_404
 from django.views import View
 from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.jobs.models import JobPosting
+from apps.jobs.services.job_urls import resolve_external_job_url
 
 from .serializers import JobClickEventCreateSerializer, UserSearchEventCreateSerializer
 from .services.events import record_click_event, record_search_event
+from .services.redirect_pages import render_job_redirect_page
 
 
 class TrackSearchEventAPIView(APIView):
@@ -45,7 +48,7 @@ class TrackClickEventAPIView(APIView):
 
 
 class AlertJobClickRedirectView(View):
-    """Track alert email job clicks, then redirect to the original listing URL."""
+    """Track alert email job clicks, then open the original listing URL."""
 
     def get(self, request, job_id: int):
         job = get_object_or_404(JobPosting, pk=job_id)
@@ -57,7 +60,8 @@ class AlertJobClickRedirectView(View):
             )
         except Exception:
             pass
-        target = (job.job_url or "").strip()
-        if not target:
-            return redirect("/search/")
-        return redirect(target)
+
+        site_url = getattr(settings, "SITE_URL", "http://localhost:8000").rstrip("/")
+        search_url = f"{site_url}/search/"
+        target = resolve_external_job_url(job.job_url)
+        return render_job_redirect_page(target_url=target, search_url=search_url)
