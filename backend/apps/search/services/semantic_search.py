@@ -46,7 +46,7 @@ def semantic_search_jobs(
         tech_only=tech_only,
     ).values_list("id", flat=True)
 
-    pool_size = int(getattr(settings, "SEMANTIC_SEARCH_CANDIDATE_POOL", 100))
+    pool_size = int(getattr(settings, "SEMANTIC_SEARCH_CANDIDATE_POOL", 200))
 
     rows = (
         JobEmbedding.objects.filter(

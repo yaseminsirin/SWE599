@@ -93,12 +93,100 @@ SEARCH_STOPWORDS = frozenset(
 )
 
 
+TECH_QUERY_SIGNALS = frozenset(
+    {
+        "python",
+        "django",
+        "flask",
+        "react",
+        "java",
+        "javascript",
+        "typescript",
+        "developer",
+        "engineer",
+        "software",
+        "backend",
+        "frontend",
+        "devops",
+        "data",
+        "sql",
+        "api",
+        "apis",
+        "cloud",
+        "fullstack",
+        "mobile",
+        "ios",
+        "android",
+        "ml",
+        "ai",
+        "kubernetes",
+        "aws",
+    }
+)
+
+NON_TECH_JOB_PHRASES = (
+    "truck driver",
+    "cdl",
+    "owner operator",
+    "delivery driver",
+    "flatbed",
+    "logistics",
+    "warehouse",
+    "security officer",
+    "forklift",
+    "janitor",
+    "cashier",
+    "nurse aide",
+)
+
+
+def core_query_terms(query: str, *, max_terms: int = 6) -> set[str]:
+    """Focus lexical/relevance checks on the most specific query terms."""
+    terms = content_tokens(query)
+    if not terms:
+        return set()
+    if len(terms) <= max_terms:
+        return terms
+    return set(sorted(terms, key=lambda token: (-len(token), token))[:max_terms])
+
+
+def _job_text_blob(job: JobPosting) -> str:
+    return " ".join(
+        filter(
+            None,
+            [
+                job.title,
+                job.normalized_title,
+                job.category_normalized,
+                job.category_raw,
+                (job.description_clean or "")[:500],
+            ],
+        )
+    ).lower()
+
+
+def is_domain_mismatch(query: str, job: JobPosting) -> bool:
+    """Drop obvious cross-domain neighbors (e.g. truck driver for a Python query)."""
+    q_terms = content_tokens(query)
+    if not q_terms & TECH_QUERY_SIGNALS:
+        return False
+
+    blob = _job_text_blob(job)
+    job_terms = content_tokens(blob)
+    if job_terms & TECH_QUERY_SIGNALS:
+        return False
+
+    return any(phrase in blob for phrase in NON_TECH_JOB_PHRASES)
+
+
 def content_tokens(text: str) -> set[str]:
     return {token for token in _tokenize(text) if len(token) >= 3 and token not in SEARCH_STOPWORDS}
 
 
 def compute_lexical_score(query: str, job: JobPosting) -> float:
-    q_tokens = content_tokens(query)
+    q_tokens = core_query_terms(query)
+    if not q_tokens:
+        q_tokens = content_tokens(query)
     if not q_tokens:
         return 0.0
 
@@ -166,11 +254,14 @@ def is_relevant_semantic_match(
     *,
     hybrid_score: float,
     lexical_score: float,
+    semantic_score: float,
 ) -> bool:
-    """Drop cross-domain pgvector neighbors (e.g. truck driver for a Python query)."""
-    q_terms = content_tokens(query)
+    if is_domain_mismatch(query, job):
+        return False
+
+    q_terms = core_query_terms(query) or content_tokens(query)
     if not q_terms:
-        return hybrid_score >= 0.35
+        return semantic_score >= 0.35
 
     title_terms = content_tokens(" ".join(filter(None, [job.title, job.normalized_title])))
     category_terms = content_tokens(
@@ -181,17 +272,21 @@ def is_relevant_semantic_match(
     title_hits = q_terms & title_terms
     category_hits = q_terms & category_terms
     body_hits = q_terms & body_terms
+    any_hits = title_hits | category_hits | body_hits
 
     if title_hits or category_hits:
         return True
 
-    if len(body_hits) >= 2 and lexical_score >= 0.06:
+    if body_hits and semantic_score >= 0.38:
         return True
 
-    if body_hits and hybrid_score >= 0.40 and lexical_score >= 0.05:
+    if any_hits and hybrid_score >= 0.35:
         return True
 
-    if hybrid_score >= 0.52 and lexical_score >= 0.08:
+    if semantic_score >= 0.48 and lexical_score >= 0.04:
+        return True
+
+    if len(body_hits) >= 2 and lexical_score >= 0.05:
         return True
 
     return False
@@ -203,7 +298,8 @@ def filter_relevant_semantic_results(
 ) -> list[dict[str, Any]]:
     if not results:
         return []
-    return [
+
+    filtered = [
         item
         for item in results
         if is_relevant_semantic_match(
@@ -211,5 +307,18 @@ def filter_relevant_semantic_results(
             item["job"],
             hybrid_score=float(item.get("hybrid_score", item["semantic_score"])),
             lexical_score=float(item.get("lexical_score", 0.0)),
+            semantic_score=float(item.get("semantic_score", 0.0)),
         )
     ]
+    if filtered:
+        return filtered
+
+    # Long natural-language queries can over-filter; keep top semantic matches
+    # that are not obvious cross-domain noise.
+    fallback = [
+        item
+        for item in results
+        if not is_domain_mismatch(query, item["job"])
+        and float(item.get("semantic_score", 0.0)) >= 0.40
+    ]
+    return fallback

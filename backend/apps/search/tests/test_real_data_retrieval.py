@@ -113,8 +113,29 @@ class RealDataRetrievalTests(TestCase):
                 truck_job,
                 hybrid_score=0.57,
                 lexical_score=0.0,
+                semantic_score=0.82,
             )
         )
+
+    def test_long_natural_language_query_keeps_python_job(self):
+        long_query = (
+            "Python developer with backend experience building REST APIs, "
+            "web services, and data-driven applications"
+        )
+        candidates = [
+            {
+                "job": self.real_job,
+                "semantic_score": 0.71,
+                "lexical_score": compute_lexical_score(long_query, self.real_job),
+                "hybrid_score": compute_hybrid_score(
+                    semantic_score=0.71,
+                    lexical_score=compute_lexical_score(long_query, self.real_job),
+                ),
+            },
+        ]
+        filtered = filter_relevant_semantic_results(long_query, candidates)
+        self.assertEqual(len(filtered), 1)
+        self.assertEqual(filtered[0]["job"].id, self.real_job.id)
 
     @override_settings(SEMANTIC_TECH_ONLY=True)
     @patch("apps.search.services.semantic_search.embed_text")
