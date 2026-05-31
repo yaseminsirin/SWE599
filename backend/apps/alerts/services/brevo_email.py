@@ -22,6 +22,7 @@ def send_transactional_email(
     """
     api_key = getattr(settings, "BREVO_API_KEY", "").strip()
     from_email = getattr(settings, "DEFAULT_FROM_EMAIL", "").strip()
+    from_name = getattr(settings, "DEFAULT_FROM_NAME", "").strip()
 
     if not api_key:
         raise ValueError("BREVO_API_KEY is not configured")
@@ -30,8 +31,12 @@ def send_transactional_email(
     if not (recipient or "").strip():
         raise ValueError("recipient email is required")
 
+    sender: dict[str, str] = {"email": from_email}
+    if from_name:
+        sender["name"] = from_name
+
     payload = {
-        "sender": {"email": from_email},
+        "sender": sender,
         "to": [{"email": recipient.strip()}],
         "subject": subject,
         "textContent": body,

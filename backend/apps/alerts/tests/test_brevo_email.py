@@ -24,7 +24,11 @@ class BrevoEmailTests(TestCase):
                 body="Hello",
             )
 
-    @override_settings(BREVO_API_KEY="test-key", DEFAULT_FROM_EMAIL="sender@example.com")
+    @override_settings(
+        BREVO_API_KEY="test-key",
+        DEFAULT_FROM_EMAIL="sender@example.com",
+        DEFAULT_FROM_NAME="JobSense AI",
+    )
     @patch("apps.alerts.services.brevo_email.requests.post")
     def test_successful_send(self, mock_post):
         mock_response = MagicMock()
@@ -43,6 +47,7 @@ class BrevoEmailTests(TestCase):
         mock_post.assert_called_once()
         call_kwargs = mock_post.call_args.kwargs
         self.assertEqual(call_kwargs["json"]["sender"]["email"], "sender@example.com")
+        self.assertEqual(call_kwargs["json"]["sender"]["name"], "JobSense AI")
         self.assertEqual(call_kwargs["json"]["to"], [{"email": "to@example.com"}])
         self.assertEqual(call_kwargs["json"]["subject"], "Job alert: python")
         self.assertEqual(call_kwargs["headers"]["api-key"], "test-key")

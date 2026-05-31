@@ -195,6 +195,7 @@ EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER", "")
 EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
 EMAIL_USE_TLS = os.getenv("EMAIL_USE_TLS", "true").lower() == "true"
 DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "noreply@example.com")
+DEFAULT_FROM_NAME = os.getenv("DEFAULT_FROM_NAME", "JobSense AI").strip()
 ALERT_DEFAULT_EMAIL = os.getenv("ALERT_DEFAULT_EMAIL", "")
 SITE_URL = os.getenv("SITE_URL", "http://localhost:8000").strip()
 
