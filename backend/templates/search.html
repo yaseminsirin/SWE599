@@ -4,26 +4,14 @@
 
 {% block content %}
 <h1 class="page-title">Find your next role</h1>
-<p class="page-sub">Search across aggregated listings. Switch between keyword, semantic, and smart ranking.</p>
+<p class="page-sub">Semantic search across aggregated job listings — describe the role you want in natural language.</p>
 
 <section class="card search-card" aria-label="Job search">
   <form id="searchForm" novalidate>
-    <div class="mode-tabs" role="tablist" aria-label="Search mode">
-      <button type="button" class="mode-tab is-active" data-mode="keyword" role="tab" aria-selected="true">
-        Keyword Search
-      </button>
-      <button type="button" class="mode-tab" data-mode="semantic" role="tab" aria-selected="false">
-        Semantic Search
-      </button>
-      <button type="button" class="mode-tab" data-mode="ranked" role="tab" aria-selected="false">
-        Smart Ranking
-      </button>
-    </div>
-
     <div class="form-grid">
-      <div>
-        <label class="form-label" for="query">Keywords</label>
-        <input class="input" type="search" id="query" name="query" placeholder='e.g. "Python backend"' autocomplete="off" />
+      <div class="form-grid__full">
+        <label class="form-label" for="query">Search query</label>
+        <input class="input" type="search" id="query" name="query" placeholder='e.g. "Python backend developer" or "data analyst"' autocomplete="off" required />
       </div>
       <div>
         <label class="form-label" for="location">Location</label>
@@ -50,15 +38,28 @@
       <p class="search-status" id="searchStatus" aria-live="polite"></p>
     </div>
   </form>
+
+  <div id="alertPanel" class="alert-panel" hidden>
+    <h3 class="alert-panel__title">Create job alert</h3>
+    <p class="alert-panel__desc">
+      We will email you when new jobs semantically match:
+      <strong id="alertQueryPreview"></strong>
+    </p>
+    <div class="alert-panel__form">
+      <label class="form-label" for="alertEmail">Email</label>
+      <input class="input" type="email" id="alertEmail" placeholder="you@example.com" autocomplete="email" required />
+      <button type="button" class="btn btn--primary btn--block" id="alertSubmitBtn">Create Alert</button>
+      <p class="search-status" id="alertFormStatus" aria-live="polite"></p>
+    </div>
+  </div>
 </section>
 
 <section class="results-section" aria-label="Results">
   <h2>Results</h2>
   <div id="jobResults">
-    <div class="loading-state" id="searchInitialLoading">
-      <div class="spinner"></div>
-      <strong>Loading jobs…</strong>
-      <span>Fetching listings from the database.</span>
+    <div class="empty-state" id="searchIdle">
+      <strong>Start with a search query</strong>
+      <span>Enter the kind of role you want and click Search Jobs. Results use semantic matching only.</span>
     </div>
   </div>
   <nav class="pagination" id="jobPagination" aria-label="Job results pages" hidden></nav>

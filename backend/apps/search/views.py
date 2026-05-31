@@ -60,6 +60,17 @@ class SemanticJobSearchAPIView(APIView):
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 
+        filter_params = {
+            "location": request.query_params.get("location") or "",
+            "employment_type": request.query_params.get("employment_type") or "",
+            "is_remote": request.query_params.get("is_remote") or "",
+        }
+        if any(v for v in filter_params.values()):
+            allowed_ids = set(
+                apply_job_filters(get_base_job_queryset(), filter_params).values_list("id", flat=True)
+            )
+            scored_results = [row for row in scored_results if row["job"].id in allowed_ids]
+
         paginator = self.pagination_class()
         page = paginator.paginate_queryset(scored_results, request, view=self)
         page = page or []

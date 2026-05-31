@@ -1,5 +1,5 @@
 /**
- * Search page — mode tabs, API calls, pagination (5 jobs per page)
+ * Search page — semantic search only + inline alert creation
  */
 (function () {
   var PAGE_SIZE = 5;
@@ -82,43 +82,7 @@
     return doc.body.innerHTML;
   }
 
-  function formatScore(value) {
-    if (value == null || value === "") return "—";
-    return String(value);
-  }
-
-  function scoreBadge(label, value) {
-    return (
-      '<span class="badge badge--score badge--score-' +
-      label.toLowerCase() +
-      '">' +
-      escapeHtml(label) +
-      " " +
-      escapeHtml(formatScore(value)) +
-      "</span>"
-    );
-  }
-
-  function buildScoreBadges(job, mode) {
-    if (mode === "semantic") {
-      return (
-        scoreBadge("Semantic", job.semantic_score) +
-        scoreBadge("Lexical", job.lexical_score) +
-        scoreBadge("Hybrid", job.hybrid_score)
-      );
-    }
-    if (mode === "ranked") {
-      return (
-        scoreBadge("Rank", job.rank_position) +
-        scoreBadge("Semantic", job.semantic_score) +
-        scoreBadge("Lexical", job.keyword_score) +
-        scoreBadge("Hybrid", job.final_score)
-      );
-    }
-    return "";
-  }
-
-  function buildJobBadges(job, rankHtml) {
+  function buildJobBadges(job) {
     var parts = [];
 
     if (job.source_label) {
@@ -151,25 +115,16 @@
       parts.push('<span class="badge badge--category">' + escapeHtml(category) + "</span>");
     }
 
-    return parts.join("") + (rankHtml || "");
+    return parts.join("");
   }
 
-  function setActiveMode(mode) {
-    document.querySelectorAll(".mode-tab[data-mode]").forEach(function (btn) {
-      var m = btn.getAttribute("data-mode");
-      var on = m === mode;
-      btn.classList.toggle("is-active", on);
-      btn.setAttribute("aria-selected", on ? "true" : "false");
-    });
-  }
-
-  function renderJobs(results, mode) {
+  function renderJobs(results) {
     var root = document.getElementById("jobResults");
     if (!root) return;
 
     if (!results || results.length === 0) {
       root.innerHTML =
-        '<div class="empty-state" id="emptyAfterSearch"><strong>No jobs found</strong><span>Try different keywords or filters.</span></div>';
+        '<div class="empty-state" id="emptyAfterSearch"><strong>No jobs found</strong><span>Try a different search query or filters.</span></div>';
       return;
     }
 
@@ -181,9 +136,7 @@
         var desc = job.description_clean || "";
         var snippet = sanitizeJobDescriptionHtml(desc);
         var url = job.job_url || "#";
-        var scoreHtml =
-          mode === "semantic" || mode === "ranked" ? buildScoreBadges(job, mode) : "";
-        var badges = buildJobBadges(job, scoreHtml);
+        var badges = buildJobBadges(job);
         return (
           '<article class="job-card">' +
           '<h3 class="job-card__title">' +
@@ -259,39 +212,44 @@
     var root = document.getElementById("jobResults");
     if (!root) return;
     root.innerHTML =
-      '<div class="loading-state" id="searchLoading"><div class="spinner"></div><strong>Loading…</strong><span>Fetching jobs from the API.</span></div>';
+      '<div class="loading-state" id="searchLoading"><div class="spinner"></div><strong>Loading…</strong><span>Finding semantically similar jobs.</span></div>';
     var nav = document.getElementById("jobPagination");
     if (nav) nav.hidden = true;
   }
 
-  function buildRequest(page, currentMode) {
-    var query = (document.getElementById("query") && document.getElementById("query").value.trim()) || "";
-    var location =
-      (document.getElementById("location") && document.getElementById("location").value.trim()) || "";
-    var employment =
-      (document.getElementById("employment_type") && document.getElementById("employment_type").value) || "";
-    var remoteChecked = document.getElementById("is_remote") && document.getElementById("is_remote").checked;
+  function getSearchValues() {
+    return {
+      query: (document.getElementById("query") && document.getElementById("query").value.trim()) || "",
+      location: (document.getElementById("location") && document.getElementById("location").value.trim()) || "",
+      employment:
+        (document.getElementById("employment_type") && document.getElementById("employment_type").value) || "",
+      remoteChecked: !!(document.getElementById("is_remote") && document.getElementById("is_remote").checked),
+    };
+  }
 
+  function buildRequest(page) {
+    var values = getSearchValues();
     var params = new URLSearchParams();
     params.set("page", String(page));
     params.set("page_size", String(PAGE_SIZE));
-    if (location) params.set("location", location);
-    if (employment) params.set("employment_type", employment);
-    if (remoteChecked) params.set("is_remote", "true");
+    params.set("q", values.query);
+    params.set("tech_only", "true");
+    if (values.location) params.set("location", values.location);
+    if (values.employment) params.set("employment_type", values.employment);
+    if (values.remoteChecked) params.set("is_remote", "true");
+    return { endpoint: "/api/jobs/semantic-search/", params: params, query: values.query };
+  }
 
-    var endpoint = "/api/jobs/search/";
-    if (currentMode === "semantic") {
-      endpoint = "/api/jobs/semantic-search/";
-      if (query) params.set("q", query);
-      params.set("tech_only", "true");
-    } else if (currentMode === "ranked") {
-      endpoint = "/api/jobs/ranked-search/";
-      if (query) params.set("keyword", query);
-    } else if (query) {
-      params.set("keyword", query);
-    }
-
-    return { endpoint: endpoint, params: params, query: query, mode: currentMode };
+  function buildAlertPayload() {
+    var values = getSearchValues();
+    return {
+      keyword: values.query,
+      location_text: values.location,
+      is_remote: values.remoteChecked ? true : null,
+      employment_type: values.employment,
+      notify_email: (document.getElementById("alertEmail") && document.getElementById("alertEmail").value.trim()) || "",
+      filters: { search_mode: "semantic" },
+    };
   }
 
   var loadJobs;
@@ -300,27 +258,38 @@
     var form = document.getElementById("searchForm");
     if (!form) return;
 
-    var currentMode = "keyword";
     var currentPage = 1;
+    var alertPanel = document.getElementById("alertPanel");
+    var alertQueryPreview = document.getElementById("alertQueryPreview");
+    var alertFormStatus = document.getElementById("alertFormStatus");
 
-    document.querySelectorAll(".mode-tab").forEach(function (btn) {
-      btn.addEventListener("click", function () {
-        currentMode = btn.getAttribute("data-mode") || "keyword";
-        setActiveMode(currentMode);
-      });
-    });
-    setActiveMode("keyword");
+    function openAlertPanel() {
+      var values = getSearchValues();
+      if (!values.query) {
+        if (alertFormStatus) alertFormStatus.textContent = "Enter a search query first.";
+        if (alertPanel) alertPanel.hidden = false;
+        return;
+      }
+      if (alertQueryPreview) alertQueryPreview.textContent = values.query;
+      if (alertFormStatus) alertFormStatus.textContent = "";
+      if (alertPanel) {
+        alertPanel.hidden = false;
+        var emailEl = document.getElementById("alertEmail");
+        if (emailEl) emailEl.focus();
+      }
+    }
 
     loadJobs = async function (page) {
       currentPage = page;
       var statusEl = document.getElementById("searchStatus");
-      var req = buildRequest(page, currentMode);
+      var req = buildRequest(page);
 
-      if (req.mode === "semantic" && !req.query) {
-        if (statusEl) statusEl.textContent = "";
-        showLoading();
-        req = buildRequest(page, "keyword");
-        req.mode = "keyword";
+      if (!req.query) {
+        if (statusEl) statusEl.textContent = "Enter a search query to run semantic search.";
+        document.getElementById("jobResults").innerHTML =
+          '<div class="empty-state"><strong>Start with a search query</strong><span>Describe the role you want, then click Search Jobs.</span></div>';
+        renderPagination(1, 0);
+        return;
       }
 
       showLoading();
@@ -338,10 +307,10 @@
         }
         var results = data.results || [];
         var total = data.count != null ? data.count : results.length;
-        renderJobs(results, req.mode);
+        renderJobs(results);
         renderPagination(page, total);
         if (statusEl) {
-          statusEl.textContent = total + " job" + (total === 1 ? "" : "s") + " total.";
+          statusEl.textContent = total + " semantically matched job" + (total === 1 ? "" : "s") + ".";
         }
       } catch (err) {
         document.getElementById("jobResults").innerHTML =
@@ -358,23 +327,50 @@
 
     var alertBtn = document.getElementById("createAlertBtn");
     if (alertBtn) {
-      alertBtn.addEventListener("click", function () {
-        var params = new URLSearchParams();
-        var queryEl = document.getElementById("query");
-        var locationEl = document.getElementById("location");
-        var employmentEl = document.getElementById("employment_type");
-        var remoteEl = document.getElementById("is_remote");
-        var query = queryEl && queryEl.value.trim();
-        if (query) params.set("keyword", query);
-        if (locationEl && locationEl.value.trim()) params.set("location", locationEl.value.trim());
-        if (employmentEl && employmentEl.value) params.set("employment_type", employmentEl.value);
-        if (remoteEl && remoteEl.checked) params.set("is_remote", "true");
-        params.set("search_mode", currentMode);
-        window.location.href = "/alerts/?" + params.toString();
-      });
+      alertBtn.addEventListener("click", openAlertPanel);
     }
 
-    loadJobs(1);
+    var alertSubmitBtn = document.getElementById("alertSubmitBtn");
+    if (alertSubmitBtn) {
+      alertSubmitBtn.addEventListener("click", async function () {
+        var values = getSearchValues();
+        if (!values.query) {
+          if (alertFormStatus) alertFormStatus.textContent = "Enter a search query first.";
+          return;
+        }
+
+        var payload = buildAlertPayload();
+        if (!payload.notify_email) {
+          if (alertFormStatus) alertFormStatus.textContent = "Email is required.";
+          return;
+        }
+
+        if (alertFormStatus) alertFormStatus.textContent = "Creating alert…";
+        alertSubmitBtn.disabled = true;
+
+        try {
+          var resp = await window.apiFetch("/api/alerts/", {
+            method: "POST",
+            body: JSON.stringify(payload),
+          });
+          var data = await resp.json();
+          if (!resp.ok) {
+            if (alertFormStatus) {
+              alertFormStatus.textContent =
+                (data.notify_email && data.notify_email[0]) || data.detail || "Could not create alert.";
+            }
+            return;
+          }
+          if (alertFormStatus) alertFormStatus.textContent = "Alert created. You will receive email updates for this search.";
+          var emailEl = document.getElementById("alertEmail");
+          if (emailEl) emailEl.value = "";
+        } catch (err) {
+          if (alertFormStatus) alertFormStatus.textContent = "Network error. Please try again.";
+        } finally {
+          alertSubmitBtn.disabled = false;
+        }
+      });
+    }
   }
 
   document.addEventListener("DOMContentLoaded", init);

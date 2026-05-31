@@ -15,7 +15,7 @@
     var location = params.get("location") || "";
     var employment = params.get("employment_type") || "";
     var remote = params.get("is_remote");
-    var searchMode = params.get("search_mode") || "keyword";
+    var searchMode = params.get("search_mode") || "semantic";
 
     var keywordEl = document.getElementById("a_keyword");
     var locationEl = document.getElementById("a_location");
