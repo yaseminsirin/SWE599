@@ -92,6 +92,7 @@ def generate_alert_email_content(alert: JobAlert, jobs: list[JobPosting]) -> Ale
             alert_query=alert_query,
             jobs_context=jobs_context,
             job_count=len(jobs),
+            required_job_ids=[job.id for job in jobs],
         )
         raw = provider.generate(system=SYSTEM_PROMPT, user=user_prompt)
         parsed = parse_llm_response(raw, jobs=jobs)

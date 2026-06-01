@@ -126,7 +126,15 @@ def narrow_jobs_by_terms(queryset: QuerySet[JobPosting], terms: set[str]) -> Que
     if not terms:
         return queryset
     token_q = Q()
-    for token in terms:
+    for token in sorted(terms):
+        # Short tokens (e.g. "dev") explode candidate sets on description ILIKE.
+        # Use prefix-only matching on structured fields for speed and precision.
+        if len(token) <= 4:
+            token_q |= Q(title__istartswith=token)
+            token_q |= Q(normalized_title__istartswith=token)
+            token_q |= Q(category_normalized__istartswith=token)
+            token_q |= Q(category_raw__istartswith=token)
+            continue
         token_q |= Q(title__icontains=token)
         token_q |= Q(normalized_title__icontains=token)
         token_q |= Q(description_clean__icontains=token)

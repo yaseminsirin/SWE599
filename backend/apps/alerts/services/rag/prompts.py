@@ -14,8 +14,9 @@ Rules:
 - Do NOT output organization-only words unless part of a skill phrase.
 - One-word signals are allowed ONLY for real technologies (SQL, Python, AWS, Docker, React, etc.).
 - Prefer phrases like "Data analysis and reporting", "API and backend development", "Product roadmap ownership".
-- job_reasons: for EVERY job_id in the list, one specific sentence explaining why THAT job matches the user query.
+- job_reasons: for EVERY required job_id in the list, one specific sentence explaining why THAT job matches the user query.
   Use the job title, company, and description/snippet. Never use generic templates.
+- Include only required job_id keys in job_reasons (no extra keys).
 - Write in English unless the query clearly requests another language.
 
 Output ONLY valid JSON (no markdown fences, no commentary):
@@ -28,13 +29,18 @@ Output ONLY valid JSON (no markdown fences, no commentary):
 }"""
 
 
-def build_user_prompt(*, alert_query: str, jobs_context: str, job_count: int) -> str:
+def build_user_prompt(*, alert_query: str, jobs_context: str, job_count: int, required_job_ids: list[int]) -> str:
+    required_ids = ", ".join(str(job_id) for job_id in required_job_ids)
     return f"""User alert query and preferences (retrieval already completed):
 {alert_query}
 
 Number of jobs in this email: {job_count}
+Required job_ids for job_reasons (all required): {required_ids}
 
 Retrieved jobs (each includes job_id — use these exact ids as keys in job_reasons):
 {jobs_context}
 
-Return JSON only with summary, key_signals, and job_reasons for every job_id listed."""
+Return JSON only with:
+- summary (string)
+- key_signals (array of strings)
+- job_reasons (object containing every required job_id key exactly once)."""

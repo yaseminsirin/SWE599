@@ -88,6 +88,13 @@ class SemanticSearchQualityTests(TestCase):
         self.assertNotIn("data", compact.split())
         self.assertNotIn("web", compact.split())
 
+    def test_dev_short_query_expands_to_developer_terms(self):
+        terms = prefilter_terms("dev")
+        self.assertIn("developer", terms)
+        self.assertIn("engineer", terms)
+        compact = retrieval_query_text("dev")
+        self.assertIn("developer", compact)
+
     def test_prefilter_excludes_clerk_and_psychiatrist(self):
         terms = prefilter_terms(_LONG_QUERY)
         matched_ids = set(narrow_jobs_by_terms(JobPosting.objects.all(), terms).values_list("id", flat=True))
@@ -128,6 +135,11 @@ class SemanticSearchQualityTests(TestCase):
         result_ids = {row["job"].id for row in long_results}
         self.assertNotIn(self.clerk_job.id, result_ids)
         self.assertNotIn(self.psych_job.id, result_ids)
+
+    def test_dev_query_returns_python_developer(self):
+        results = semantic_search_jobs("dev", top_k=5)
+        self.assertGreaterEqual(len(results), 1)
+        self.assertEqual(results[0]["job"].id, self.python_job.id)
 
     def test_semantic_api_long_query_returns_python_job(self):
         response = self.client.get(

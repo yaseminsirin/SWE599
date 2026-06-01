@@ -97,7 +97,6 @@ def semantic_search_jobs(
         tech_only=tech_only,
     )
     pool_size = int(getattr(settings, "SEMANTIC_SEARCH_CANDIDATE_POOL", 200))
-    terms = _query_prefilter_terms(query)
 
     narrowed_qs = narrow_jobs_by_terms(base_qs, terms) if terms else base_qs
     job_ids = narrowed_qs.values_list("id", flat=True)

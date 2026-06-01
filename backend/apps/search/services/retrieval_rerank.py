@@ -95,6 +95,7 @@ SEARCH_STOPWORDS = frozenset(
 
 TECH_QUERY_SIGNALS = frozenset(
     {
+        "dev",
         "python",
         "django",
         "flask",
@@ -126,6 +127,10 @@ TECH_QUERY_SIGNALS = frozenset(
 
 # Too broad for SQL prefilter / title gate — match unrelated clerk & healthcare listings.
 GENERIC_BROAD_TERMS = frozenset({"data", "web", "api", "apis", "cloud", "mobile", "ai", "ml", "sql"})
+
+SHORT_QUERY_EXPANSIONS = {
+    "dev": {"developer", "devops", "software", "engineer"},
+}
 
 STRONG_ROLE_TERMS = frozenset(
     {
@@ -197,6 +202,8 @@ def prefilter_terms(query: str) -> set[str]:
     terms = core_query_terms(query) or content_tokens(query)
     if not terms:
         return set()
+    for token in content_tokens(query):
+        terms.update(SHORT_QUERY_EXPANSIONS.get(token, set()))
     if is_tech_query(query):
         strong = terms & STRONG_ROLE_TERMS
         if strong:
@@ -207,11 +214,25 @@ def prefilter_terms(query: str) -> set[str]:
 
 def match_terms_for_relevance(query: str) -> set[str]:
     terms = core_query_terms(query) or content_tokens(query)
+    for token in content_tokens(query):
+        terms.update(SHORT_QUERY_EXPANSIONS.get(token, set()))
     if is_tech_query(query):
         strong = terms & STRONG_ROLE_TERMS
         if strong:
             return strong
     return terms
+
+
+def _prefix_overlap(query_terms: set[str], doc_terms: set[str]) -> bool:
+    """Allow short query prefixes like 'dev' to match 'developer'."""
+    if not query_terms or not doc_terms:
+        return False
+    for q in query_terms:
+        if len(q) < 3:
+            continue
+        if len(q) <= 4 and any(term.startswith(q) for term in doc_terms):
+            return True
+    return False
 
 
 def core_query_terms(query: str, *, max_terms: int = 6) -> set[str]:
@@ -365,21 +386,24 @@ def is_relevant_semantic_match(
     title_hits = q_terms & title_terms
     category_hits = q_terms & category_terms
     body_hits = q_terms & body_terms
+    title_prefix_hits = _prefix_overlap(q_terms, title_terms)
+    category_prefix_hits = _prefix_overlap(q_terms, category_terms)
+    body_prefix_hits = _prefix_overlap(q_terms, body_terms)
 
     if is_tech_query(query):
-        if title_hits:
+        if title_hits or title_prefix_hits:
             return True
-        if category_hits and any(hint in category_blob for hint in IT_CATEGORY_HINTS):
+        if (category_hits or category_prefix_hits) and any(hint in category_blob for hint in IT_CATEGORY_HINTS):
             return True
-        if len(body_hits) >= 2 and semantic_score >= 0.42 and lexical_score >= 0.08:
+        if (len(body_hits) >= 2 or body_prefix_hits) and semantic_score >= 0.42 and lexical_score >= 0.08:
             return True
         return False
 
-    if title_hits or category_hits:
+    if title_hits or category_hits or title_prefix_hits or category_prefix_hits:
         return True
-    if body_hits and semantic_score >= 0.38:
+    if (body_hits or body_prefix_hits) and semantic_score >= 0.38:
         return True
-    if body_hits and hybrid_score >= 0.35:
+    if (body_hits or body_prefix_hits) and hybrid_score >= 0.35:
         return True
     return semantic_score >= 0.48 and lexical_score >= 0.04
 

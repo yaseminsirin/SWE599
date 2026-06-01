@@ -103,6 +103,8 @@ class RagEmailGenerationTests(TestCase):
         self.assertGreaterEqual(len(content.key_signals), MIN_SIGNALS_TO_SHOW)
         self.assertTrue(all(is_quality_signal(s) for s in content.key_signals))
         self.assertIn("backend developer", content.job_match_notes[0].lower())
+        provider_call = mock_provider.generate.call_args.kwargs
+        self.assertIn(f"Required job_ids for job_reasons (all required): {self.job.id}", provider_call["user"])
 
     def test_provider_failure_falls_back_without_ai_insight(self):
         mock_provider = MagicMock()
