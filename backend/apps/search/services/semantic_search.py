@@ -1,3 +1,4 @@
+import logging
 from typing import Any
 
 from django.conf import settings
@@ -12,12 +13,16 @@ from .embeddings.factory import (
 )
 from .job_quality import get_searchable_job_queryset, is_quality_job, narrow_jobs_by_terms
 from .retrieval_rerank import (
-    filter_relevant_semantic_results,
+    apply_relevance_with_fallback,
+    is_natural_language_query,
     prefilter_terms,
     rerank_semantic_candidates,
     retrieval_query_text,
+    should_skip_pgvector_prefilter,
 )
 from .vector_query import cosine_distance_annotation, semantic_score_from_row
+
+logger = logging.getLogger(__name__)
 
 
 def _query_prefilter_terms(query: str) -> set[str]:
@@ -64,11 +69,10 @@ def semantic_search_jobs(
     tech_only: bool | None = None,
 ) -> list[dict[str, Any]]:
     """
-    pgvector retrieval with query-term prefiltering, hybrid rerank, and relevance gate.
-
-    Large mixed corpora (e.g. USAJOBS + Adzuna) can return unrelated nearest neighbors;
-    we first restrict pgvector to jobs mentioning core query terms, then rerank.
+    pgvector retrieval with optional query-term prefilter (short queries only),
+    hybrid rerank, relevance gate, and NL fallback.
     """
+    natural_language = is_natural_language_query(query)
     terms = _query_prefilter_terms(query)
     retrieval_text = retrieval_query_text(query)
 
@@ -98,7 +102,12 @@ def semantic_search_jobs(
     )
     pool_size = int(getattr(settings, "SEMANTIC_SEARCH_CANDIDATE_POOL", 200))
 
-    narrowed_qs = narrow_jobs_by_terms(base_qs, terms) if terms else base_qs
+    skip_prefilter = should_skip_pgvector_prefilter(query)
+    if skip_prefilter:
+        narrowed_qs = base_qs
+    else:
+        narrowed_qs = narrow_jobs_by_terms(base_qs, terms) if terms else base_qs
+    count_before_pgvector = narrowed_qs.count()
     job_ids = narrowed_qs.values_list("id", flat=True)
 
     candidates = _pgvector_candidates(
@@ -109,7 +118,8 @@ def semantic_search_jobs(
         pool_size=pool_size,
     )
 
-    if not candidates and terms:
+    if not candidates and terms and not skip_prefilter:
+        count_before_pgvector = base_qs.count()
         job_ids = base_qs.values_list("id", flat=True)
         candidates = _pgvector_candidates(
             query_vector=query_vector,
@@ -120,7 +130,22 @@ def semantic_search_jobs(
         )
 
     reranked = rerank_semantic_candidates(query, candidates)
-    relevant = filter_relevant_semantic_results(query, reranked)
+    relevant, used_fallback = apply_relevance_with_fallback(query, reranked)
+
+    logger.info(
+        "semantic_search query=%r natural_language=%s retrieval_text=%r prefilter_terms=%s "
+        "candidates_before_pgvector=%s after_pgvector=%s after_rerank=%s after_relevance=%s fallback=%s",
+        query,
+        natural_language,
+        retrieval_text,
+        sorted(terms),
+        count_before_pgvector,
+        len(candidates),
+        len(reranked),
+        len(relevant),
+        used_fallback,
+    )
+
     return relevant[:top_k]
 
 

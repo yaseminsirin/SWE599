@@ -5,6 +5,9 @@ from __future__ import annotations
 import re
 from datetime import datetime
 
+# Whole-word matching avoids false positives (e.g. engineer vs "Engineering Service").
+WORD_BOUNDARY_TOKENS = frozenset({"engineer", "developer", "analyst"})
+
 from django.conf import settings
 from django.db.models import Q, QuerySet
 from django.utils import timezone
@@ -121,23 +124,38 @@ def apply_keyword_token_filter(queryset: QuerySet[JobPosting], keyword: str) -> 
     return queryset.filter(token_q)
 
 
+def _term_lookup_q(token: str) -> Q:
+    """Build OR conditions for one prefilter token."""
+    if token in WORD_BOUNDARY_TOKENS:
+        pattern = rf"\m{re.escape(token)}\M"
+        return (
+            Q(title__iregex=pattern)
+            | Q(normalized_title__iregex=pattern)
+            | Q(description_clean__iregex=pattern)
+            | Q(category_normalized__iregex=pattern)
+            | Q(category_raw__iregex=pattern)
+        )
+    if len(token) <= 4:
+        return (
+            Q(title__istartswith=token)
+            | Q(normalized_title__istartswith=token)
+            | Q(category_normalized__istartswith=token)
+            | Q(category_raw__istartswith=token)
+        )
+    return (
+        Q(title__icontains=token)
+        | Q(normalized_title__icontains=token)
+        | Q(description_clean__icontains=token)
+        | Q(category_normalized__icontains=token)
+        | Q(category_raw__icontains=token)
+    )
+
+
 def narrow_jobs_by_terms(queryset: QuerySet[JobPosting], terms: set[str]) -> QuerySet[JobPosting]:
     """Keep jobs that mention at least one query term (query-aware prefilter, not global tech gate)."""
     if not terms:
         return queryset
     token_q = Q()
     for token in sorted(terms):
-        # Short tokens (e.g. "dev") explode candidate sets on description ILIKE.
-        # Use prefix-only matching on structured fields for speed and precision.
-        if len(token) <= 4:
-            token_q |= Q(title__istartswith=token)
-            token_q |= Q(normalized_title__istartswith=token)
-            token_q |= Q(category_normalized__istartswith=token)
-            token_q |= Q(category_raw__istartswith=token)
-            continue
-        token_q |= Q(title__icontains=token)
-        token_q |= Q(normalized_title__icontains=token)
-        token_q |= Q(description_clean__icontains=token)
-        token_q |= Q(category_normalized__icontains=token)
-        token_q |= Q(category_raw__icontains=token)
+        token_q |= _term_lookup_q(token)
     return queryset.filter(token_q)

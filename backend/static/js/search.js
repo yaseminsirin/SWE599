@@ -208,11 +208,17 @@
     });
   }
 
-  function showLoading() {
+  function showLoading(mode) {
     var root = document.getElementById("jobResults");
     if (!root) return;
+    var hint =
+      mode === "search"
+        ? "Finding semantically similar jobs."
+        : "Loading the latest job listings.";
     root.innerHTML =
-      '<div class="loading-state" id="searchLoading"><div class="spinner"></div><strong>Loading…</strong><span>Finding semantically similar jobs.</span></div>';
+      '<div class="loading-state" id="searchLoading"><div class="spinner"></div><strong>Loading…</strong><span>' +
+      hint +
+      "</span></div>";
     var nav = document.getElementById("jobPagination");
     if (nav) nav.hidden = true;
   }
@@ -232,11 +238,26 @@
     var params = new URLSearchParams();
     params.set("page", String(page));
     params.set("page_size", String(PAGE_SIZE));
-    params.set("q", values.query);
     if (values.location) params.set("location", values.location);
     if (values.employment) params.set("employment_type", values.employment);
     if (values.remoteChecked) params.set("is_remote", "true");
-    return { endpoint: "/api/jobs/semantic-search/", params: params, query: values.query };
+
+    if (values.query) {
+      params.set("q", values.query);
+      return {
+        endpoint: "/api/jobs/semantic-search/",
+        params: params,
+        mode: "search",
+        query: values.query,
+      };
+    }
+
+    return {
+      endpoint: "/api/jobs/",
+      params: params,
+      mode: "browse",
+      query: "",
+    };
   }
 
   function buildAlertPayload() {
@@ -283,15 +304,7 @@
       var statusEl = document.getElementById("searchStatus");
       var req = buildRequest(page);
 
-      if (!req.query) {
-        if (statusEl) statusEl.textContent = "Enter a search query to run semantic search.";
-        document.getElementById("jobResults").innerHTML =
-          '<div class="empty-state"><strong>Start with a search query</strong><span>Describe the role you want, then click Search Jobs.</span></div>';
-        renderPagination(1, 0);
-        return;
-      }
-
-      showLoading();
+      showLoading(req.mode);
       try {
         var resp = await window.apiFetch(req.endpoint + "?" + req.params.toString());
         var data = await resp.json();
@@ -309,7 +322,11 @@
         renderJobs(results);
         renderPagination(page, total);
         if (statusEl) {
-          statusEl.textContent = total + " semantically matched job" + (total === 1 ? "" : "s") + ".";
+          if (req.mode === "search") {
+            statusEl.textContent = total + " semantically matched job" + (total === 1 ? "" : "s") + ".";
+          } else {
+            statusEl.textContent = total + " job listing" + (total === 1 ? "" : "s") + " (newest first).";
+          }
         }
       } catch (err) {
         document.getElementById("jobResults").innerHTML =
@@ -370,6 +387,8 @@
         }
       });
     }
+
+    loadJobs(1);
   }
 
   document.addEventListener("DOMContentLoaded", init);

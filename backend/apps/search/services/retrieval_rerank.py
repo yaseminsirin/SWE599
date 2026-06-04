@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from django.conf import settings
@@ -9,6 +10,94 @@ from django.conf import settings
 from apps.jobs.models import JobPosting
 
 from .job_quality import _tokenize
+
+logger = logging.getLogger(__name__)
+
+NATURAL_LANGUAGE_PHRASES = (
+    "i enjoy",
+    "i want",
+    "i have experience",
+    "working with",
+    "looking for",
+)
+
+# Vocabulary tokens matched from NL queries (after plural normalization).
+SKILL_VOCABULARY = frozenset(
+    {
+        "backend",
+        "developer",
+        "software",
+        "engineer",
+        "api",
+        "database",
+        "scalable",
+        "cloud",
+        "microservices",
+        "python",
+        "data",
+        "analytics",
+        "dashboard",
+        "sql",
+        "business",
+        "insights",
+        "reporting",
+        "analyst",
+        "devops",
+        "frontend",
+        "fullstack",
+        "java",
+        "javascript",
+        "typescript",
+        "react",
+        "django",
+        "kubernetes",
+        "aws",
+    }
+)
+
+PLURAL_NORMALIZE = {
+    "apis": "api",
+    "databases": "database",
+    "applications": "application",
+    "dashboards": "dashboard",
+}
+
+# Implicit role terms when NL queries describe building/designing systems but omit "developer".
+NL_SKILL_EXPANSIONS = {
+    "backend": {"developer", "software", "engineer"},
+    "api": {"developer", "software"},
+    "database": {"engineer", "developer"},
+}
+
+# Terms used to order compact retrieval text for embeddings.
+RETRIEVAL_TERM_PRIORITY = (
+    "backend",
+    "developer",
+    "software",
+    "engineer",
+    "api",
+    "database",
+    "scalable",
+    "cloud",
+    "microservices",
+    "python",
+    "data",
+    "analytics",
+    "dashboard",
+    "sql",
+    "business",
+    "insights",
+    "analyst",
+    "reporting",
+    "devops",
+    "frontend",
+)
+
+ANALYST_SKILL_SIGNALS = frozenset(
+    {"analyst", "analytics", "dashboard", "insights", "reporting", "business"}
+)
+
+SINGLE_TERM_BODY_SEMANTIC_MIN = 0.20
 
 SEARCH_STOPWORDS = frozenset(
     {
@@ -193,12 +282,67 @@ def content_tokens(text: str) -> set[str]:
     return {token for token in _tokenize(text) if len(token) >= 3 and token not in SEARCH_STOPWORDS}
 
 
+def normalize_skill_token(token: str) -> str:
+    return PLURAL_NORMALIZE.get(token, token)
+
+
+def is_natural_language_query(query: str) -> bool:
+    stripped = (query or "").strip().lower()
+    if not stripped:
+        return False
+    if len(stripped.split()) > 6:
+        return True
+    return any(phrase in stripped for phrase in NATURAL_LANGUAGE_PHRASES)
+
+
+def extract_skill_terms(query: str, *, include_nl_expansions: bool = True) -> set[str]:
+    """Pull searchable skill/role terms from NL or keyword queries."""
+    terms: set[str] = set()
+    raw_tokens = set(_tokenize(query))
+    for token in raw_tokens:
+        if len(token) < 3:
+            continue
+        normalized = normalize_skill_token(token)
+        if normalized in SKILL_VOCABULARY:
+            terms.add(normalized)
+        elif token in SKILL_VOCABULARY:
+            terms.add(token)
+    if "analyzing" in raw_tokens or "analysis" in raw_tokens:
+        terms.add("analytics")
+    if include_nl_expansions:
+        for anchor, extras in NL_SKILL_EXPANSIONS.items():
+            if anchor in terms:
+                terms.update(extras)
+    if terms & ANALYST_SKILL_SIGNALS:
+        return terms
+    if terms & STRONG_ROLE_TERMS:
+        terms -= {"data", "web"}
+    else:
+        terms -= GENERIC_BROAD_TERMS
+    return terms
+
+
+def _order_retrieval_terms(terms: set[str]) -> str:
+    ordered: list[str] = []
+    for term in RETRIEVAL_TERM_PRIORITY:
+        if term in terms:
+            ordered.append(term)
+    for term in sorted(terms):
+        if term not in ordered:
+            ordered.append(term)
+    return " ".join(ordered)
+
+
 def is_tech_query(query: str) -> bool:
     return bool(content_tokens(query) & TECH_QUERY_SIGNALS)
 
 
 def prefilter_terms(query: str) -> set[str]:
-    """Terms used to narrow pgvector — avoid generic tokens like data/web."""
+    """Terms used to narrow pgvector for short keyword queries."""
+    if is_natural_language_query(query):
+        skills = extract_skill_terms(query, include_nl_expansions=False)
+        if skills:
+            return skills
     terms = core_query_terms(query) or content_tokens(query)
     if not terms:
         return set()
@@ -212,7 +356,16 @@ def prefilter_terms(query: str) -> set[str]:
     return specific if specific else terms
 
 
+def should_skip_pgvector_prefilter(query: str) -> bool:
+    """NL queries search the full embedded corpus; short queries may narrow first."""
+    return is_natural_language_query(query)
+
+
 def match_terms_for_relevance(query: str) -> set[str]:
+    if is_natural_language_query(query):
+        skills = extract_skill_terms(query)
+        if skills:
+            return skills
     terms = core_query_terms(query) or content_tokens(query)
     for token in content_tokens(query):
         terms.update(SHORT_QUERY_EXPANSIONS.get(token, set()))
@@ -249,14 +402,18 @@ def retrieval_query_text(query: str) -> str:
     """
     Compact text for embedding / pgvector retrieval.
 
-    Long natural-language queries embed far from short job-title vectors; use strong
-    role/skill terms so detailed searches behave like focused keyword queries.
+    Long natural-language queries embed far from short job-title vectors; use extracted
+    skill/role terms so detailed searches behave like focused keyword queries.
     """
     stripped = (query or "").strip()
     if not stripped:
         return ""
+    if is_natural_language_query(stripped):
+        skills = extract_skill_terms(stripped)
+        if skills:
+            return _order_retrieval_terms(skills)
     strong = prefilter_terms(stripped)
-    if strong:
+    if strong and not is_natural_language_query(stripped):
         return " ".join(sorted(strong))
     word_count = len(stripped.split())
     terms = core_query_terms(stripped)
@@ -395,7 +552,20 @@ def is_relevant_semantic_match(
             return True
         if (category_hits or category_prefix_hits) and any(hint in category_blob for hint in IT_CATEGORY_HINTS):
             return True
-        if (len(body_hits) >= 2 or body_prefix_hits) and semantic_score >= 0.42 and lexical_score >= 0.08:
+        if len(q_terms) == 1:
+            term = next(iter(q_terms))
+            blob = (job.description_clean or "").lower()
+            if (
+                body_hits
+                or body_prefix_hits
+                or term in blob
+                or term in (job.title or "").lower()
+            ) and semantic_score >= SINGLE_TERM_BODY_SEMANTIC_MIN:
+                return True
+        min_body_hits = 1 if len(q_terms) == 1 else 2
+        if (
+            len(body_hits) >= min_body_hits or body_prefix_hits
+        ) and semantic_score >= 0.42 and lexical_score >= 0.08:
             return True
         return False
 
@@ -426,3 +596,17 @@ def filter_relevant_semantic_results(
             semantic_score=float(item.get("semantic_score", 0.0)),
         )
     ]
+
+
+def apply_relevance_with_fallback(
+    query: str,
+    results: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], bool]:
+    """Apply relevance gate; for NL queries fall back to reranked semantic pool if empty."""
+    filtered = filter_relevant_semantic_results(query, results)
+    if filtered:
+        return filtered, False
+    if is_natural_language_query(query) and results:
+        fallback = [item for item in results if not is_domain_mismatch(query, item["job"])]
+        return (fallback or results), True
+    return [], False

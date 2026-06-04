@@ -11,7 +11,7 @@
     <div class="form-grid">
       <div class="form-grid__full">
         <label class="form-label" for="query">Search query</label>
-        <input class="input" type="search" id="query" name="query" placeholder='e.g. "Python backend developer" or "data analyst"' autocomplete="off" required />
+        <input class="input" type="search" id="query" name="query" placeholder='e.g. "Python backend developer" or "data analyst"' autocomplete="off" />
       </div>
       <div>
         <label class="form-label" for="location">Location</label>
@@ -57,9 +57,10 @@
 <section class="results-section" aria-label="Results">
   <h2>Results</h2>
   <div id="jobResults">
-    <div class="empty-state" id="searchIdle">
-      <strong>Start with a search query</strong>
-      <span>Enter the kind of role you want and click Search Jobs. Results use semantic matching only.</span>
+    <div class="loading-state" id="searchIdle">
+      <div class="spinner"></div>
+      <strong>Loading…</strong>
+      <span>Fetching the latest job listings.</span>
     </div>
   </div>
   <nav class="pagination" id="jobPagination" aria-label="Job results pages" hidden></nav>

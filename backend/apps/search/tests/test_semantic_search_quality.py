@@ -11,6 +11,7 @@ from apps.search.services.retrieval_rerank import (
     compute_hybrid_score,
     compute_lexical_score,
     filter_relevant_semantic_results,
+    is_natural_language_query,
     prefilter_terms,
     retrieval_query_text,
 )
@@ -79,6 +80,7 @@ class SemanticSearchQualityTests(TestCase):
             generate_job_embedding(job)
 
     def test_prefilter_uses_strong_terms_not_generic_data_or_web(self):
+        self.assertTrue(is_natural_language_query(_LONG_QUERY))
         terms = prefilter_terms(_LONG_QUERY)
         self.assertIn("python", terms)
         self.assertIn("developer", terms)
