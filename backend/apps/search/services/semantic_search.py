@@ -37,6 +37,7 @@ from .retrieval_rerank import (
     rerank_semantic_candidates,
     retrieval_query_text,
     should_skip_pgvector_prefilter,
+    should_use_full_index_stack_retrieval,
     specific_query_terms,
     match_terms_for_relevance,
 )
@@ -348,8 +349,9 @@ def semantic_search_jobs(
     )
 
     skip_prefilter = should_skip_pgvector_prefilter(query)
+    use_full_index = should_use_full_index_stack_retrieval(terms)
     narrowed_ids: frozenset[int] | None = None
-    if not skip_prefilter:
+    if not skip_prefilter and not use_full_index:
         base_qs = get_searchable_job_queryset(
             real_sources_only=True,
             exclude_demo=True,
@@ -366,7 +368,7 @@ def semantic_search_jobs(
     candidates: list[dict[str, Any]] = []
     scope_size = 0
 
-    if skip_prefilter:
+    if skip_prefilter or use_full_index:
         scope_size = -1  # join-scoped corpus; no ID materialization
         candidates = _pgvector_candidates(
             scope_queryset=scope_queryset,
@@ -386,7 +388,7 @@ def semantic_search_jobs(
                 scan_limit=scan_limit,
             )
 
-    if not candidates and terms and not skip_prefilter:
+    if not candidates and terms and not skip_prefilter and not use_full_index:
         from .job_quality import narrow_jobs_by_terms_broad
 
         logger.warning(

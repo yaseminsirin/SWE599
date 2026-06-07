@@ -479,6 +479,18 @@ def should_skip_pgvector_prefilter(query: str) -> bool:
     return is_natural_language_query(query)
 
 
+def should_use_full_index_stack_retrieval(terms: set[str]) -> bool:
+    """
+    Stack + role queries (backend engineer) skip slow SQL iregex prefilters.
+
+    Real corpora rarely have the stack token in titles; index-first ANN plus software
+    post-filter is faster (~300ms) and surfaces software engineering roles.
+    """
+    if not terms or len(terms) < 2:
+        return False
+    return bool(specific_query_terms(terms))
+
+
 def match_terms_for_relevance(query: str) -> set[str]:
     if is_natural_language_query(query):
         skills = extract_skill_terms(query)
@@ -861,13 +873,24 @@ def is_relevant_semantic_match(
         if is_non_software_engineer_title(job):
             return False
         if is_software_tech_job(job) and not is_non_tech_job(job):
-            title_role = title_terms & {"engineer", "developer", "programmer", "software"}
+            title_blob = " ".join(
+                filter(None, [job.title, job.normalized_title])
+            ).lower()
+            title_role = title_terms & {
+                "engineer",
+                "developer",
+                "programmer",
+                "software",
+                "computer",
+            }
+            if "software" in title_terms and "engineering" in title_blob:
+                title_role = title_role or {"software"}
             body_blob = (job.description_clean or "").lower()
             if title_role:
                 if any(_term_in_text(term, body_blob) for term in specific):
                     if semantic_score >= 0.36:
                         return True
-                if semantic_score >= 0.44 and lexical_score >= 0.06:
+                if semantic_score >= 0.42:
                     return True
 
     if is_tech_query(query):
