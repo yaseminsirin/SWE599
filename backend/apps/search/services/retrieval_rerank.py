@@ -848,7 +848,7 @@ def is_relevant_semantic_match(
         if is_non_software_engineer_title(job):
             return False
         if is_software_tech_job(job) and not is_non_tech_job(job):
-            title_role = title_tokens & {"engineer", "developer", "programmer", "software"}
+            title_role = title_terms & {"engineer", "developer", "programmer", "software"}
             body_blob = (job.description_clean or "").lower()
             if title_role:
                 if any(_term_in_text(term, body_blob) for term in specific):
