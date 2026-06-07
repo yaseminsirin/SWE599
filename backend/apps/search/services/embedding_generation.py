@@ -27,14 +27,28 @@ SOURCE_EMBED_PRIORITY = ("remotive", "adzuna", "usajobs")
 
 
 def build_job_embedding_text(job: JobPosting) -> str:
+    """
+    Title-first text for MiniLM — job titles carry most retrieval signal; full
+    descriptions dilute vectors. Re-run regenerate_embeddings after changing this.
+    """
+    title_line = " ".join(
+        filter(
+            None,
+            [
+                job.title,
+                job.normalized_title,
+                job.category_normalized,
+                job.category_raw,
+            ],
+        )
+    )
+    description = (job.description_clean or "")[:700]
     return "\n".join(
         [
-            f"title: {job.title or ''}",
+            f"role: {title_line}",
             f"company: {job.company_name or ''}",
             f"location: {job.location_text or ''}",
-            f"employment_type: {job.employment_type or ''}",
-            f"description: {job.description_clean or ''}",
-            f"category: {job.category_normalized or ''}",
+            f"summary: {description}",
         ]
     ).strip()
 

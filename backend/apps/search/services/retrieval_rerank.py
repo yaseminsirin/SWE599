@@ -415,8 +415,8 @@ def retrieval_query_text(query: str) -> str:
     """
     Compact text for embedding / pgvector retrieval.
 
-    Long natural-language queries embed far from short job-title vectors; use extracted
-    skill/role terms so detailed searches behave like focused keyword queries.
+    Short tech queries keep the user's phrasing ('backend engineer') so vectors align
+    with job titles. Long NL queries compress to ordered skill terms.
     """
     stripped = (query or "").strip()
     if not stripped:
@@ -425,15 +425,19 @@ def retrieval_query_text(query: str) -> str:
         skills = extract_skill_terms(stripped)
         if skills:
             return _order_retrieval_terms(skills)
+
+    word_count = len(stripped.split())
+    if word_count <= 4 and is_tech_query(stripped):
+        return stripped
+
     strong = prefilter_terms(stripped)
     if strong and not is_natural_language_query(stripped):
-        return " ".join(sorted(strong))
-    word_count = len(stripped.split())
+        return _order_retrieval_terms(strong)
     terms = core_query_terms(stripped)
     if word_count > 5 and terms:
-        return " ".join(sorted(terms - GENERIC_BROAD_TERMS or terms))
+        return _order_retrieval_terms(terms - GENERIC_BROAD_TERMS or terms)
     if len(terms) >= 2:
-        return " ".join(sorted(terms))
+        return _order_retrieval_terms(terms)
     return stripped
 
 
@@ -543,13 +547,59 @@ def compute_lexical_score(query: str, job: JobPosting) -> float:
 
 
 def compute_hybrid_score(*, semantic_score: float, lexical_score: float) -> float:
-    ws = float(getattr(settings, "SEMANTIC_RERANK_WEIGHT_SEMANTIC", 0.7))
-    wl = float(getattr(settings, "SEMANTIC_RERANK_WEIGHT_LEXICAL", 0.3))
+    ws = float(getattr(settings, "SEMANTIC_RERANK_WEIGHT_SEMANTIC", 0.55))
+    wl = float(getattr(settings, "SEMANTIC_RERANK_WEIGHT_LEXICAL", 0.25))
     total = ws + wl
     if total <= 0:
         return semantic_score
     ws, wl = ws / total, wl / total
     return (ws * semantic_score) + (wl * lexical_score)
+
+
+def compute_role_alignment_score(query: str, job: JobPosting) -> float:
+    """
+    Title/role fit beyond token overlap — rewards phrase matches and specific stack terms.
+    """
+    q_terms = match_terms_for_relevance(query)
+    if not q_terms:
+        return 0.0
+
+    title_blob = " ".join(filter(None, [job.title, job.normalized_title])).lower()
+    title_tokens = content_tokens(title_blob)
+    specific = specific_query_terms(q_terms)
+
+    if specific and is_misleading_engineer_listing(job, specific):
+        return 0.0
+
+    title_coverage = len(q_terms & title_tokens) / len(q_terms)
+    specific_coverage = (
+        len(specific & title_tokens) / len(specific) if specific else title_coverage
+    )
+
+    phrase_bonus = 0.0
+    query_lower = (query or "").strip().lower()
+    if len(q_terms) >= 2 and query_lower in title_blob:
+        phrase_bonus = 0.3
+    elif specific and any(term in title_blob for term in specific):
+        phrase_bonus = 0.15
+
+    return min(1.0, (0.45 * title_coverage) + (0.40 * specific_coverage) + phrase_bonus)
+
+
+def compute_final_rank_score(
+    *,
+    semantic_score: float,
+    lexical_score: float,
+    role_alignment_score: float,
+) -> float:
+    ws = float(getattr(settings, "SEMANTIC_RERANK_WEIGHT_SEMANTIC", 0.55))
+    wl = float(getattr(settings, "SEMANTIC_RERANK_WEIGHT_LEXICAL", 0.25))
+    wr = float(getattr(settings, "SEMANTIC_RERANK_WEIGHT_ROLE", 0.20))
+    total = ws + wl + wr
+    if total <= 0:
+        return semantic_score
+    ws, wl, wr = ws / total, wl / total, wr / total
+    return (ws * semantic_score) + (wl * lexical_score) + (wr * role_alignment_score)
 
 
 def rerank_semantic_candidates(
@@ -561,19 +611,32 @@ def rerank_semantic_candidates(
         job = item["job"]
         semantic_score = float(item["semantic_score"])
         lexical_score = compute_lexical_score(query, job)
+        role_alignment_score = compute_role_alignment_score(query, job)
         hybrid_score = compute_hybrid_score(
             semantic_score=semantic_score,
             lexical_score=lexical_score,
+        )
+        final_rank_score = compute_final_rank_score(
+            semantic_score=semantic_score,
+            lexical_score=lexical_score,
+            role_alignment_score=role_alignment_score,
         )
         reranked.append(
             {
                 **item,
                 "lexical_score": lexical_score,
+                "role_alignment_score": role_alignment_score,
                 "hybrid_score": hybrid_score,
+                "final_rank_score": final_rank_score,
             }
         )
     reranked.sort(
-        key=lambda row: (row["hybrid_score"], row["semantic_score"], row["job"].posted_at or row["job"].created_at),
+        key=lambda row: (
+            row["final_rank_score"],
+            row["semantic_score"],
+            row["role_alignment_score"],
+            row["job"].posted_at or row["job"].created_at,
+        ),
         reverse=True,
     )
     return reranked

@@ -83,6 +83,11 @@ class SemanticJobSearchAPIView(APIView):
             data[idx]["semantic_score"] = round(float(item["semantic_score"]), 6)
             data[idx]["hybrid_score"] = round(float(item.get("hybrid_score", item["semantic_score"])), 6)
             data[idx]["lexical_score"] = round(float(item.get("lexical_score", 0.0)), 6)
+            data[idx]["role_alignment_score"] = round(float(item.get("role_alignment_score", 0.0)), 6)
+            data[idx]["final_rank_score"] = round(
+                float(item.get("final_rank_score", item.get("hybrid_score", item["semantic_score"]))),
+                6,
+            )
 
         return paginator.get_paginated_response(data)
 

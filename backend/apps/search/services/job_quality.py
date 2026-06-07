@@ -151,10 +151,42 @@ def _term_lookup_q(token: str) -> Q:
     )
 
 
+# Mirror retrieval_rerank role/broad tokens for AND-style prefilter (avoid circular imports).
+_PREFILTER_GENERIC_ROLE_TERMS = frozenset(
+    {"engineer", "developer", "programmer", "analyst", "scientist", "architect", "software"}
+)
+_PREFILTER_GENERIC_BROAD_TERMS = frozenset(
+    {"data", "web", "api", "apis", "cloud", "mobile", "ai", "ml", "sql"}
+)
+
+
+def _prefilter_specific_terms(terms: set[str]) -> set[str]:
+    return terms - _PREFILTER_GENERIC_ROLE_TERMS - _PREFILTER_GENERIC_BROAD_TERMS
+
+
 def narrow_jobs_by_terms(queryset: QuerySet[JobPosting], terms: set[str]) -> QuerySet[JobPosting]:
-    """Keep jobs that mention at least one query term (query-aware prefilter, not global tech gate)."""
+    """
+    Narrow pgvector scope before vector search.
+
+    Multi-term tech queries (e.g. backend + engineer) use AND on specific tokens so we do
+    not flood retrieval with every posting that mentions only 'engineer'.
+    """
     if not terms:
         return queryset
+
+    specific = _prefilter_specific_terms(terms)
+    if specific and len(terms) >= 2:
+        narrowed = queryset
+        for token in sorted(specific):
+            narrowed = narrowed.filter(_term_lookup_q(token))
+        role_terms = terms & _PREFILTER_GENERIC_ROLE_TERMS
+        if role_terms:
+            role_q = Q()
+            for token in sorted(role_terms):
+                role_q |= _term_lookup_q(token)
+            narrowed = narrowed.filter(role_q)
+        return narrowed
+
     token_q = Q()
     for token in sorted(terms):
         token_q |= _term_lookup_q(token)

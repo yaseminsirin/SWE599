@@ -66,13 +66,17 @@ class Command(BaseCommand):
         top_k = max(1, options["top_k"])
         ws = float(settings.SEMANTIC_RERANK_WEIGHT_SEMANTIC)
         wl = float(settings.SEMANTIC_RERANK_WEIGHT_LEXICAL)
-        total = ws + wl or 1.0
-        ws, wl = ws / total, wl / total
+        wr = float(getattr(settings, "SEMANTIC_RERANK_WEIGHT_ROLE", 0.20))
+        total = ws + wl + wr or 1.0
+        ws, wl, wr = ws / total, wl / total, wr / total
 
-        self.stdout.write("=== Hybrid ranking weights (semantic-search endpoint) ===")
-        self.stdout.write(f"  semantic weight = {ws:.0%}")
-        self.stdout.write(f"  lexical weight  = {wl:.0%}")
-        self.stdout.write(f"  formula: hybrid = {ws:.2f}*semantic + {wl:.2f}*lexical")
+        self.stdout.write("=== Ranking weights (semantic-search endpoint) ===")
+        self.stdout.write(f"  semantic weight      = {ws:.0%}")
+        self.stdout.write(f"  lexical weight       = {wl:.0%}")
+        self.stdout.write(f"  role alignment weight = {wr:.0%}")
+        self.stdout.write(
+            f"  formula: final = {ws:.2f}*semantic + {wl:.2f}*lexical + {wr:.2f}*role"
+        )
         self.stdout.write("")
 
         fieldnames = [
@@ -81,7 +85,9 @@ class Command(BaseCommand):
             "title",
             "semantic_score",
             "lexical_score",
+            "role_alignment_score",
             "hybrid_score",
+            "final_rank_score",
             "rank_semantic_only",
             "rank_lexical_only",
             "rank_hybrid",
@@ -106,7 +112,11 @@ class Command(BaseCommand):
                     "job": item["job"],
                     "semantic_score": float(item["semantic_score"]),
                     "lexical_score": float(item.get("lexical_score", compute_lexical_score(query, item["job"]))),
+                    "role_alignment_score": float(item.get("role_alignment_score", 0.0)),
                     "hybrid_score": float(item.get("hybrid_score", item["semantic_score"])),
+                    "final_rank_score": float(
+                        item.get("final_rank_score", item.get("hybrid_score", item["semantic_score"]))
+                    ),
                 }
                 for item in results
             ]
@@ -137,7 +147,9 @@ class Command(BaseCommand):
                         "title": (job.title or "")[:120],
                         "semantic_score": round(item["semantic_score"], 4),
                         "lexical_score": round(item["lexical_score"], 4),
+                        "role_alignment_score": round(item["role_alignment_score"], 4),
                         "hybrid_score": round(item["hybrid_score"], 4),
+                        "final_rank_score": round(item["final_rank_score"], 4),
                         "rank_semantic_only": sem_rank[job.id],
                         "rank_lexical_only": lex_rank[job.id],
                         "rank_hybrid": hyb_rank[job.id],

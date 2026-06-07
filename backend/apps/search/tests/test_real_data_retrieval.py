@@ -9,6 +9,7 @@ from apps.search.services.retrieval_rerank import (
     apply_relevance_with_fallback,
     compute_hybrid_score,
     compute_lexical_score,
+    compute_role_alignment_score,
     filter_relevant_semantic_results,
     is_misleading_engineer_listing,
     is_relevant_semantic_match,
@@ -160,6 +161,55 @@ class RealDataRetrievalTests(TestCase):
         self.assertEqual(relevant[0]["job"].id, software_backend.id)
         self.assertNotIn(staff_software.id, {row["job"].id for row in relevant})
 
+    def test_narrow_prefilter_requires_specific_and_role_terms(self):
+        backend_job = JobPosting.objects.create(
+            source="adzuna",
+            source_job_id="be-narrow",
+            title="Backend Engineer",
+            description_clean="Build backend APIs and services with Python and SQL for production systems.",
+            job_url="https://example.com/be-narrow",
+            content_hash="be-narrow-hash",
+            posted_at=timezone.now(),
+        )
+        staff_only = JobPosting.objects.create(
+            source="adzuna",
+            source_job_id="staff-only",
+            title="Staff Software Engineer",
+            description_clean="Lead engineers and mentor teams across the organization on platform work.",
+            job_url="https://example.com/staff-only",
+            content_hash="staff-only-hash",
+            posted_at=timezone.now(),
+        )
+        terms = prefilter_terms("backend engineer")
+        ids = set(narrow_jobs_by_terms(JobPosting.objects.all(), terms).values_list("id", flat=True))
+        self.assertIn(backend_job.id, ids)
+        self.assertNotIn(staff_only.id, ids)
+
+    def test_role_alignment_prefers_title_phrase_match(self):
+        backend_job = JobPosting.objects.create(
+            source="adzuna",
+            source_job_id="role-be",
+            title="Backend Engineer",
+            description_clean="Design REST APIs and backend services.",
+            job_url="https://example.com/role-be",
+            content_hash="role-be-hash",
+            posted_at=timezone.now(),
+        )
+        generic_job = JobPosting.objects.create(
+            source="adzuna",
+            source_job_id="role-gen",
+            title="Software Engineer",
+            description_clean="General application development across the stack.",
+            job_url="https://example.com/role-gen",
+            content_hash="role-gen-hash",
+            posted_at=timezone.now(),
+        )
+        query = "backend engineer"
+        self.assertGreater(
+            compute_role_alignment_score(query, backend_job),
+            compute_role_alignment_score(query, generic_job),
+        )
+
     def test_hybrid_rerank_prefers_title_overlap(self):
         other = JobPosting.objects.create(
             source="usajobs",
@@ -251,7 +301,8 @@ class RealDataRetrievalTests(TestCase):
         self.assertIn("python", compact)
         self.assertIn("developer", compact)
         self.assertLess(len(compact.split()), len(long_query.split()))
-        self.assertEqual(retrieval_query_text("python developer"), "developer python")
+        self.assertEqual(retrieval_query_text("python developer"), "python developer")
+        self.assertEqual(retrieval_query_text("backend engineer"), "backend engineer")
 
     def test_clerk_and_psychiatrist_rejected_for_python_long_query(self):
         clerk_job = JobPosting.objects.create(
