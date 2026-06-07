@@ -479,6 +479,15 @@ def should_skip_pgvector_prefilter(query: str) -> bool:
     return is_natural_language_query(query)
 
 
+def expand_stack_role_terms(terms: set[str]) -> set[str]:
+    """Align backend engineer / backend developer retrieval and relevance terms."""
+    expanded = set(terms)
+    for anchor, extras in NL_SKILL_EXPANSIONS.items():
+        if anchor in terms:
+            expanded.update(extras)
+    return expanded
+
+
 def should_use_full_index_stack_retrieval(terms: set[str]) -> bool:
     """
     Stack + role queries (backend engineer) skip slow SQL iregex prefilters.
@@ -499,6 +508,8 @@ def match_terms_for_relevance(query: str) -> set[str]:
     terms = core_query_terms(query) or content_tokens(query)
     for token in content_tokens(query):
         terms.update(SHORT_QUERY_EXPANSIONS.get(token, set()))
+    if is_tech_query(query) and specific_query_terms(terms) and len(terms) >= 2:
+        return expand_stack_role_terms(terms)
     if is_tech_query(query):
         strong = terms & STRONG_ROLE_TERMS
         if strong:
@@ -545,6 +556,9 @@ def retrieval_query_text(query: str) -> str:
 
     word_count = len(stripped.split())
     if word_count <= 4 and is_tech_query(stripped):
+        terms = prefilter_terms(stripped) or core_query_terms(stripped)
+        if specific_query_terms(terms) and len(terms) >= 2:
+            return _order_retrieval_terms(expand_stack_role_terms(terms))
         return stripped
 
     strong = prefilter_terms(stripped)
