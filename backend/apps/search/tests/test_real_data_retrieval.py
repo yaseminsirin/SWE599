@@ -6,9 +6,11 @@ from apps.jobs.models import JobPosting
 from apps.jobs.services.demo_dataset import DEMO_SOURCE
 from apps.search.services.job_quality import apply_keyword_token_filter, is_quality_job, is_tech_related_job
 from apps.search.services.retrieval_rerank import (
+    apply_relevance_with_fallback,
     compute_hybrid_score,
     compute_lexical_score,
     filter_relevant_semantic_results,
+    is_misleading_engineer_listing,
     is_relevant_semantic_match,
     prefilter_terms,
     rerank_semantic_candidates,
@@ -110,6 +112,53 @@ class RealDataRetrievalTests(TestCase):
         filtered = filter_relevant_semantic_results(query, reranked)
         self.assertEqual(len(filtered), 1)
         self.assertEqual(filtered[0]["job"].id, backend_job.id)
+
+    def test_backend_engineer_fallback_keeps_software_role_with_backend_in_body(self):
+        staff_software = JobPosting.objects.create(
+            source="remotive",
+            source_job_id="staff-sw-1",
+            title="Staff Software Engineer",
+            company_name="LawnStarter",
+            description_clean=(
+                "Lead platform initiatives across product teams. "
+                "Mentor engineers and drive technical strategy."
+            ),
+            category_normalized="Software Development",
+            job_url="https://example.com/staff-sw",
+            content_hash="staff-sw-hash",
+            posted_at=timezone.now(),
+        )
+        software_backend = JobPosting.objects.create(
+            source="remotive",
+            source_job_id="sw-backend-1",
+            title="Senior Software Engineer",
+            company_name="A.Team",
+            description_clean=(
+                "Build backend APIs and scalable services for client products. "
+                "Python, REST, and cloud deployment experience required."
+            ),
+            category_normalized="Software Development",
+            job_url="https://example.com/sw-backend",
+            content_hash="sw-backend-hash",
+            posted_at=timezone.now(),
+        )
+        query = "backend engineer"
+        specific = specific_query_terms(prefilter_terms(query))
+        self.assertTrue(is_misleading_engineer_listing(staff_software, specific))
+        self.assertFalse(is_misleading_engineer_listing(software_backend, specific))
+
+        reranked = rerank_semantic_candidates(
+            query,
+            [
+                {"job": staff_software, "semantic_score": 0.66},
+                {"job": software_backend, "semantic_score": 0.55},
+            ],
+        )
+        relevant, used_fallback = apply_relevance_with_fallback(query, reranked)
+        self.assertTrue(used_fallback)
+        self.assertGreaterEqual(len(relevant), 1)
+        self.assertEqual(relevant[0]["job"].id, software_backend.id)
+        self.assertNotIn(staff_software.id, {row["job"].id for row in relevant})
 
     def test_hybrid_rerank_prefers_title_overlap(self):
         other = JobPosting.objects.create(

@@ -457,21 +457,37 @@ def specific_query_terms(q_terms: set[str]) -> set[str]:
     return q_terms - GENERIC_ROLE_TERMS - GENERIC_BROAD_TERMS
 
 
-def _job_matches_specific_terms(
-    job: JobPosting,
-    specific_terms: set[str],
-    *,
-    title_terms: set[str],
-    category_terms: set[str],
-    body_terms: set[str],
-) -> bool:
+def is_misleading_engineer_listing(job: JobPosting, specific_terms: set[str]) -> bool:
+    """
+    Drop staff/product engineer titles when the query targets a specific stack (e.g. backend).
+
+    Unlike a hard 'backend must exist' rule, this only blocks obvious false positives so
+    legitimate software roles with backend mentioned in the body can still match.
+    """
     if not specific_terms:
+        return False
+
+    title_tokens = content_tokens(" ".join(filter(None, [job.title, job.normalized_title])))
+    if specific_terms & title_tokens:
+        return False
+
+    searchable = content_tokens(_job_text_blob(job))
+    if specific_terms & searchable:
+        return False
+
+    if not title_tokens & {"engineer", "developer", "programmer"}:
+        return False
+
+    if "staff" in title_tokens or "product" in title_tokens:
         return True
-    combined = title_terms | category_terms | body_terms
-    if specific_terms & combined:
+
+    category_blob = " ".join(
+        filter(None, [job.category_normalized, job.category_raw])
+    ).lower()
+    if "product" in category_blob and "engineer" in title_tokens:
         return True
-    blob = _job_text_blob(job)
-    return any(term in blob for term in specific_terms)
+
+    return False
 
 
 def is_domain_mismatch(query: str, job: JobPosting) -> bool:
@@ -593,15 +609,8 @@ def is_relevant_semantic_match(
     body_prefix_hits = _prefix_overlap(q_terms, body_terms)
 
     specific = specific_query_terms(q_terms)
-    if is_tech_query(query) and specific:
-        if not _job_matches_specific_terms(
-            job,
-            specific,
-            title_terms=title_terms,
-            category_terms=category_terms,
-            body_terms=body_terms,
-        ):
-            return False
+    if is_tech_query(query) and specific and is_misleading_engineer_listing(job, specific):
+        return False
 
     if is_tech_query(query):
         if title_hits or title_prefix_hits:
@@ -662,10 +671,22 @@ def apply_relevance_with_fallback(
     query: str,
     results: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], bool]:
-    """Apply relevance gate; for NL queries fall back to reranked semantic pool if empty."""
+    """Apply relevance gate; fall back when strict filtering would return zero rows."""
     filtered = filter_relevant_semantic_results(query, results)
     if filtered:
         return filtered, False
+
+    if results and is_tech_query(query):
+        specific = specific_query_terms(match_terms_for_relevance(query))
+        relaxed = [
+            item
+            for item in results
+            if not is_domain_mismatch(query, item["job"])
+            and not is_misleading_engineer_listing(item["job"], specific)
+        ]
+        if relaxed:
+            return relaxed, True
+
     if is_natural_language_query(query) and results:
         fallback = [item for item in results if not is_domain_mismatch(query, item["job"])]
         return (fallback or results), True
