@@ -30,10 +30,15 @@ from .job_quality import (
 from .retrieval_rerank import (
     apply_relevance_with_fallback,
     is_natural_language_query,
+    is_software_tech_job,
+    is_non_software_engineer_title,
+    is_tech_query,
     prefilter_terms,
     rerank_semantic_candidates,
     retrieval_query_text,
     should_skip_pgvector_prefilter,
+    specific_query_terms,
+    match_terms_for_relevance,
 )
 from .vector_query import cosine_distance_annotation, semantic_score_from_row, with_hnsw_ef_search
 
@@ -426,6 +431,16 @@ def semantic_search_jobs(
             pool_size=pool_size,
             scan_limit=scan_limit,
         )
+
+    if candidates and is_tech_query(query) and specific_query_terms(
+        match_terms_for_relevance(query)
+    ):
+        candidates = [
+            item
+            for item in candidates
+            if is_software_tech_job(item["job"])
+            and not is_non_software_engineer_title(item["job"])
+        ]
 
     reranked = rerank_semantic_candidates(query, candidates)
     relevant, used_fallback = apply_relevance_with_fallback(query, reranked)

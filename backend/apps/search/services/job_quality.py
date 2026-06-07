@@ -170,7 +170,6 @@ SOFTWARE_SCOPE_TERMS = frozenset(
     {
         "software",
         "developer",
-        "engineer",
         "programmer",
         "fullstack",
         "computer",
@@ -179,6 +178,13 @@ SOFTWARE_SCOPE_TERMS = frozenset(
         "web",
         "backend",
         "frontend",
+        "python",
+        "java",
+        "react",
+        "javascript",
+        "typescript",
+        "cyber",
+        "cybersecurity",
     }
 )
 

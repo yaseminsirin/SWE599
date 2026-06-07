@@ -270,6 +270,16 @@ IT_CATEGORY_HINTS = (
     "cyber",
 )
 
+SOFTWARE_CATEGORY_HINTS = (
+    "information technology",
+    "software",
+    "computer",
+    "developer",
+    "programmer",
+    "data science",
+    "cyber",
+)
+
 NON_TECH_JOB_PHRASES = (
     "truck driver",
     "cdl",
@@ -558,6 +568,9 @@ def _job_category_blob(job: JobPosting) -> str:
 
 
 def is_software_tech_job(job: JobPosting) -> bool:
+    if is_non_software_engineer_title(job) or is_non_tech_job(job):
+        return False
+
     title_tokens = content_tokens(
         " ".join(filter(None, [job.title, job.normalized_title]))
     )
@@ -565,7 +578,7 @@ def is_software_tech_job(job: JobPosting) -> bool:
         return True
 
     category_blob = _job_category_blob(job)
-    if any(hint in category_blob for hint in IT_CATEGORY_HINTS):
+    if any(hint in category_blob for hint in SOFTWARE_CATEGORY_HINTS):
         return True
 
     return bool(content_tokens(_job_text_blob(job)) & SOFTWARE_TITLE_TOKENS)
