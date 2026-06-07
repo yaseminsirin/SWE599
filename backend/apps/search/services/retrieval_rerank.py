@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from django.conf import settings
@@ -290,6 +291,48 @@ NON_TECH_JOB_PHRASES = (
     "medical assistant",
 )
 
+NON_TECH_TITLE_TOKENS = frozenset(
+    {
+        "physicist",
+        "physics",
+        "nurse",
+        "nursing",
+        "physician",
+        "psychiatrist",
+        "psychologist",
+        "therapist",
+        "custodian",
+        "janitor",
+        "cashier",
+        "driver",
+        "truck",
+        "warehouse",
+        "forklift",
+        "clerk",
+        "aide",
+        "surgeon",
+        "dentist",
+        "veterinarian",
+        "paramedic",
+        "ast",
+    }
+)
+
+NON_TECH_CATEGORY_HINTS = (
+    "physics",
+    "healthcare",
+    "medical",
+    "nursing",
+    "transportation",
+    "logistics",
+    "retail",
+    "hospitality",
+    "construction",
+    "agriculture",
+    "biology",
+    "chemistry",
+)
+
 
 def content_tokens(text: str) -> set[str]:
     return {token for token in _tokenize(text) if len(token) >= 3 and token not in SEARCH_STOPWORDS}
@@ -456,6 +499,54 @@ def _job_text_blob(job: JobPosting) -> str:
     ).lower()
 
 
+def _job_category_blob(job: JobPosting) -> str:
+    return " ".join(
+        filter(None, [job.category_normalized, job.category_raw])
+    ).lower()
+
+
+def is_non_tech_job(job: JobPosting) -> bool:
+    """Obvious non-software roles (e.g. physicist, nurse) even if the body mentions engineering."""
+    title_tokens = content_tokens(
+        " ".join(filter(None, [job.title, job.normalized_title]))
+    )
+    if title_tokens & NON_TECH_TITLE_TOKENS:
+        return True
+
+    category_blob = _job_category_blob(job)
+    if any(hint in category_blob for hint in NON_TECH_CATEGORY_HINTS):
+        return True
+
+    blob = _job_text_blob(job)
+    return any(phrase in blob for phrase in NON_TECH_JOB_PHRASES)
+
+
+def _term_in_text(term: str, text: str) -> bool:
+    return bool(re.search(rf"\b{re.escape(term)}\b", text or "", flags=re.IGNORECASE))
+
+
+def has_meaningful_stack_signal(job: JobPosting, specific_terms: set[str]) -> bool:
+    """
+    Specific stack terms (e.g. backend) must appear in the title or in an IT-category body —
+    not as an incidental mention in a physics/medical posting.
+    """
+    if not specific_terms:
+        return True
+
+    title_tokens = content_tokens(
+        " ".join(filter(None, [job.title, job.normalized_title]))
+    )
+    if specific_terms & title_tokens:
+        return True
+
+    category_blob = _job_category_blob(job)
+    if not any(hint in category_blob for hint in IT_CATEGORY_HINTS):
+        return False
+
+    body = (job.description_clean or "").lower()
+    return any(_term_in_text(term, body) for term in specific_terms)
+
+
 def specific_query_terms(q_terms: set[str]) -> set[str]:
     """Skill/stack terms that must appear on a job when present in the query."""
     return q_terms - GENERIC_ROLE_TERMS - GENERIC_BROAD_TERMS
@@ -499,6 +590,9 @@ def is_domain_mismatch(query: str, job: JobPosting) -> bool:
     q_terms = content_tokens(query)
     if not q_terms & TECH_QUERY_SIGNALS:
         return False
+
+    if is_non_tech_job(job):
+        return True
 
     blob = _job_text_blob(job)
     job_terms = content_tokens(blob)
@@ -749,6 +843,16 @@ def apply_relevance_with_fallback(
         ]
         if relaxed:
             return relaxed, True
+
+        if specific:
+            stack_matches = [
+                item
+                for item in results
+                if not is_domain_mismatch(query, item["job"])
+                and has_meaningful_stack_signal(item["job"], specific)
+            ]
+            if stack_matches:
+                return stack_matches, True
 
     if is_natural_language_query(query) and results:
         fallback = [item for item in results if not is_domain_mismatch(query, item["job"])]

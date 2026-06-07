@@ -164,12 +164,23 @@ def _prefilter_specific_terms(terms: set[str]) -> set[str]:
     return terms - _PREFILTER_GENERIC_ROLE_TERMS - _PREFILTER_GENERIC_BROAD_TERMS
 
 
+def narrow_jobs_by_terms_broad(queryset: QuerySet[JobPosting], terms: set[str]) -> QuerySet[JobPosting]:
+    """Match any query token (OR) — wider recall fallback."""
+    if not terms:
+        return queryset
+    token_q = Q()
+    for token in sorted(terms):
+        token_q |= _term_lookup_q(token)
+    return queryset.filter(token_q)
+
+
 def narrow_jobs_by_terms(queryset: QuerySet[JobPosting], terms: set[str]) -> QuerySet[JobPosting]:
     """
     Narrow pgvector scope before vector search.
 
-    Multi-term tech queries (e.g. backend + engineer) use AND on specific tokens so we do
-    not flood retrieval with every posting that mentions only 'engineer'.
+    Multi-term queries AND only specific stack tokens (e.g. backend). Generic role
+    words (engineer, developer) are enforced in rerank/relevance, not SQL — otherwise
+    'backend engineer' often matches zero rows while index-first fills with Staff roles.
     """
     if not terms:
         return queryset
@@ -179,15 +190,6 @@ def narrow_jobs_by_terms(queryset: QuerySet[JobPosting], terms: set[str]) -> Que
         narrowed = queryset
         for token in sorted(specific):
             narrowed = narrowed.filter(_term_lookup_q(token))
-        role_terms = terms & _PREFILTER_GENERIC_ROLE_TERMS
-        if role_terms:
-            role_q = Q()
-            for token in sorted(role_terms):
-                role_q |= _term_lookup_q(token)
-            narrowed = narrowed.filter(role_q)
         return narrowed
 
-    token_q = Q()
-    for token in sorted(terms):
-        token_q |= _term_lookup_q(token)
-    return queryset.filter(token_q)
+    return narrow_jobs_by_terms_broad(queryset, terms)

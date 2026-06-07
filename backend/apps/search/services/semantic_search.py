@@ -368,11 +368,36 @@ def semantic_search_jobs(
         )
     elif narrowed_ids is not None:
         scope_size = len(narrowed_ids)
+        if narrowed_ids:
+            candidates = _pgvector_candidates(
+                scope_queryset=scope_queryset,
+                query_vector=query_vector,
+                allowed_ids=None,
+                prefer_ids=narrowed_ids,
+                pool_size=pool_size,
+                scan_limit=scan_limit,
+            )
+
+    if not candidates and terms and not skip_prefilter:
+        from .job_quality import narrow_jobs_by_terms_broad
+
+        logger.warning(
+            "semantic_search narrow prefilter returned no candidates; "
+            "retrying with broad OR prefilter terms=%s",
+            sorted(terms),
+        )
+        base_qs = get_searchable_job_queryset(
+            real_sources_only=True,
+            exclude_demo=True,
+            tech_only=tech_only,
+        )
+        broad_ids = _materialize_job_ids(narrow_jobs_by_terms_broad(base_qs, terms))
+        scope_size = len(broad_ids)
+        scan_limit = _pgvector_scan_limit(pool_size, narrowed_size=len(broad_ids) or None)
         candidates = _pgvector_candidates(
             scope_queryset=scope_queryset,
             query_vector=query_vector,
-            allowed_ids=None,
-            prefer_ids=narrowed_ids,
+            allowed_ids=broad_ids or None,
             pool_size=pool_size,
             scan_limit=scan_limit,
         )

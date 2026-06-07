@@ -11,6 +11,7 @@ from apps.search.services.retrieval_rerank import (
     compute_lexical_score,
     compute_role_alignment_score,
     filter_relevant_semantic_results,
+    is_domain_mismatch,
     is_misleading_engineer_listing,
     is_relevant_semantic_match,
     prefilter_terms,
@@ -114,6 +115,39 @@ class RealDataRetrievalTests(TestCase):
         self.assertEqual(len(filtered), 1)
         self.assertEqual(filtered[0]["job"].id, backend_job.id)
 
+    def test_backend_engineer_rejects_non_tech_physicist_false_positive(self):
+        physicist = JobPosting.objects.create(
+            source="usajobs",
+            source_job_id="nasa-physicist",
+            title="Physicist, AST, Electronics of Materials (Direct Hire)",
+            company_name="George C. Marshall Space Flight Center",
+            description_clean=(
+                "Support mission critical avionics by selecting and qualifying EEE parts. "
+                "Work with backend avionics subsystems and engineering reliability requirements."
+            ),
+            category_normalized="Physics",
+            job_url="https://example.com/nasa-physicist",
+            content_hash="nasa-physicist-hash",
+            posted_at=timezone.now(),
+        )
+        query = "backend engineer"
+        self.assertTrue(is_domain_mismatch(query, physicist))
+        self.assertFalse(
+            is_relevant_semantic_match(
+                query,
+                physicist,
+                hybrid_score=0.5,
+                lexical_score=compute_lexical_score(query, physicist),
+                semantic_score=0.55,
+            )
+        )
+        reranked = rerank_semantic_candidates(
+            query,
+            [{"job": physicist, "semantic_score": 0.55}],
+        )
+        relevant, _used_fallback = apply_relevance_with_fallback(query, reranked)
+        self.assertEqual(relevant, [])
+
     def test_backend_engineer_fallback_keeps_software_role_with_backend_in_body(self):
         staff_software = JobPosting.objects.create(
             source="remotive",
@@ -161,7 +195,7 @@ class RealDataRetrievalTests(TestCase):
         self.assertEqual(relevant[0]["job"].id, software_backend.id)
         self.assertNotIn(staff_software.id, {row["job"].id for row in relevant})
 
-    def test_narrow_prefilter_requires_specific_and_role_terms(self):
+    def test_narrow_prefilter_requires_specific_terms_not_role_and(self):
         backend_job = JobPosting.objects.create(
             source="adzuna",
             source_job_id="be-narrow",
@@ -171,19 +205,20 @@ class RealDataRetrievalTests(TestCase):
             content_hash="be-narrow-hash",
             posted_at=timezone.now(),
         )
-        staff_only = JobPosting.objects.create(
+        engineer_only = JobPosting.objects.create(
             source="adzuna",
-            source_job_id="staff-only",
+            source_job_id="eng-only",
             title="Staff Software Engineer",
             description_clean="Lead engineers and mentor teams across the organization on platform work.",
-            job_url="https://example.com/staff-only",
-            content_hash="staff-only-hash",
+            job_url="https://example.com/eng-only",
+            content_hash="eng-only-hash",
             posted_at=timezone.now(),
         )
         terms = prefilter_terms("backend engineer")
         ids = set(narrow_jobs_by_terms(JobPosting.objects.all(), terms).values_list("id", flat=True))
         self.assertIn(backend_job.id, ids)
-        self.assertNotIn(staff_only.id, ids)
+        # Role-only rows without 'backend' are excluded from the narrow SQL scope.
+        self.assertNotIn(engineer_only.id, ids)
 
     def test_role_alignment_prefers_title_phrase_match(self):
         backend_job = JobPosting.objects.create(
