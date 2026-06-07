@@ -19,7 +19,7 @@ from apps.search.services.retrieval_rerank import (
     retrieval_query_text,
     specific_query_terms,
 )
-from apps.search.services.job_quality import narrow_jobs_by_terms
+from apps.search.services.job_quality import narrow_jobs_by_terms, narrow_jobs_for_semantic_search
 from apps.search.services.semantic_search import semantic_search_jobs
 from django.utils import timezone
 
@@ -147,6 +147,84 @@ class RealDataRetrievalTests(TestCase):
         )
         relevant, _used_fallback = apply_relevance_with_fallback(query, reranked)
         self.assertEqual(relevant, [])
+
+    def test_backend_engineer_accepts_software_engineer_without_backend_in_title(self):
+        software_engineer = JobPosting.objects.create(
+            source="usajobs",
+            source_job_id="sw-eng-usa",
+            title="Computer Engineer (Cybersecurity)",
+            company_name="Agency",
+            description_clean=(
+                "Design and maintain secure software systems, APIs, and backend services "
+                "for mission applications. Python and cloud experience preferred."
+            ),
+            category_normalized="Information Technology",
+            job_url="https://example.com/sw-eng-usa",
+            content_hash="sw-eng-usa-hash",
+            posted_at=timezone.now(),
+        )
+        mechanical = JobPosting.objects.create(
+            source="usajobs",
+            source_job_id="mech-eng",
+            title="Mechanical Engineer - Facilities",
+            company_name="Agency",
+            description_clean="HVAC and facilities engineering responsibilities.",
+            category_normalized="Engineering",
+            job_url="https://example.com/mech-eng",
+            content_hash="mech-eng-hash",
+            posted_at=timezone.now(),
+        )
+        query = "backend engineer"
+        self.assertTrue(
+            is_relevant_semantic_match(
+                query,
+                software_engineer,
+                hybrid_score=0.5,
+                lexical_score=compute_lexical_score(query, software_engineer),
+                semantic_score=0.47,
+            )
+        )
+        self.assertFalse(
+            is_relevant_semantic_match(
+                query,
+                mechanical,
+                hybrid_score=0.5,
+                lexical_score=compute_lexical_score(query, mechanical),
+                semantic_score=0.47,
+            )
+        )
+
+    def test_narrow_semantic_search_expands_tiny_backend_pool(self):
+        backend_job = JobPosting.objects.create(
+            source="remotive",
+            source_job_id="tiny-backend",
+            title="Senior Full-stack React Developer",
+            description_clean="Build backend APIs and React frontends for SaaS products.",
+            job_url="https://example.com/tiny-backend",
+            content_hash="tiny-backend-hash",
+            posted_at=timezone.now(),
+        )
+        software_job = JobPosting.objects.create(
+            source="adzuna",
+            source_job_id="tiny-software",
+            title="Software Engineer",
+            description_clean="Application development across the stack.",
+            job_url="https://example.com/tiny-software",
+            content_hash="tiny-software-hash",
+            posted_at=timezone.now(),
+        )
+        terms = prefilter_terms("backend engineer")
+        narrow_ids = set(
+            narrow_jobs_by_terms(JobPosting.objects.all(), terms).values_list("id", flat=True)
+        )
+        semantic_ids = set(
+            narrow_jobs_for_semantic_search(JobPosting.objects.all(), terms).values_list(
+                "id", flat=True
+            )
+        )
+        self.assertIn(backend_job.id, narrow_ids)
+        self.assertNotIn(software_job.id, narrow_ids)
+        self.assertIn(software_job.id, semantic_ids)
 
     def test_backend_engineer_fallback_keeps_software_role_with_backend_in_body(self):
         staff_software = JobPosting.objects.create(

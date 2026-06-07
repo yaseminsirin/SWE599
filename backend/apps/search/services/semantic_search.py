@@ -25,6 +25,7 @@ from .job_quality import (
     get_searchable_job_queryset,
     is_quality_job,
     narrow_jobs_by_terms,
+    narrow_jobs_for_semantic_search,
 )
 from .retrieval_rerank import (
     apply_relevance_with_fallback,
@@ -223,16 +224,19 @@ def _pgvector_candidates(
     scan_limit: int,
     prefer_ids: frozenset[int] | None = None,
 ) -> list[dict[str, Any]]:
-    use_prefer_fallback = (
-        prefer_ids is not None and prefer_ids and prefer_ids != allowed_ids
-    )
     threshold = _large_corpus_threshold()
-    if use_prefer_fallback:
+    scoped_ids = prefer_ids or allowed_ids
+    use_prefer_fallback = (
+        prefer_ids is not None
+        and prefer_ids
+        and prefer_ids != allowed_ids
+        and (scoped_ids is None or len(scoped_ids) >= threshold)
+    )
+    if scoped_ids is not None and len(scoped_ids) < threshold:
+        search_ids = scoped_ids
+        use_prefer_fallback = False
+    elif use_prefer_fallback:
         search_ids = None
-    elif prefer_ids and len(prefer_ids) < threshold:
-        search_ids = prefer_ids
-    elif allowed_ids is not None and len(allowed_ids) < threshold:
-        search_ids = allowed_ids
     else:
         search_ids = None
 
@@ -346,7 +350,7 @@ def semantic_search_jobs(
             exclude_demo=True,
             tech_only=tech_only,
         )
-        narrowed_qs = narrow_jobs_by_terms(base_qs, terms) if terms else base_qs
+        narrowed_qs = narrow_jobs_for_semantic_search(base_qs, terms) if terms else base_qs
         narrowed_ids = _materialize_job_ids(narrowed_qs)
 
     scan_limit = _pgvector_scan_limit(
@@ -372,8 +376,7 @@ def semantic_search_jobs(
             candidates = _pgvector_candidates(
                 scope_queryset=scope_queryset,
                 query_vector=query_vector,
-                allowed_ids=None,
-                prefer_ids=narrowed_ids,
+                allowed_ids=narrowed_ids,
                 pool_size=pool_size,
                 scan_limit=scan_limit,
             )

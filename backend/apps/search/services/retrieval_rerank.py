@@ -333,6 +333,58 @@ NON_TECH_CATEGORY_HINTS = (
     "chemistry",
 )
 
+SOFTWARE_TITLE_TOKENS = frozenset(
+    {
+        "software",
+        "computer",
+        "developer",
+        "programmer",
+        "fullstack",
+        "devops",
+        "cloud",
+        "cyber",
+        "cybersecurity",
+        "web",
+        "mobile",
+        "react",
+        "python",
+        "java",
+        "typescript",
+        "javascript",
+        "data",
+        "saas",
+        "platform",
+        "stack",
+        "technical",
+        "programming",
+        "backend",
+        "frontend",
+    }
+)
+
+NON_SOFTWARE_ENGINEER_TITLE_TOKENS = frozenset(
+    {
+        "mechanical",
+        "healthcare",
+        "aerospace",
+        "structural",
+        "civil",
+        "materials",
+        "safety",
+        "fire",
+        "electronics",
+        "electrical",
+        "interdisciplinary",
+        "physicist",
+        "facilities",
+        "network",
+        "environmental",
+        "chemical",
+        "biomedical",
+        "manufacturing",
+    }
+)
+
 
 def content_tokens(text: str) -> set[str]:
     return {token for token in _tokenize(text) if len(token) >= 3 and token not in SEARCH_STOPWORDS}
@@ -503,6 +555,29 @@ def _job_category_blob(job: JobPosting) -> str:
     return " ".join(
         filter(None, [job.category_normalized, job.category_raw])
     ).lower()
+
+
+def is_software_tech_job(job: JobPosting) -> bool:
+    title_tokens = content_tokens(
+        " ".join(filter(None, [job.title, job.normalized_title]))
+    )
+    if title_tokens & SOFTWARE_TITLE_TOKENS:
+        return True
+
+    category_blob = _job_category_blob(job)
+    if any(hint in category_blob for hint in IT_CATEGORY_HINTS):
+        return True
+
+    return bool(content_tokens(_job_text_blob(job)) & SOFTWARE_TITLE_TOKENS)
+
+
+def is_non_software_engineer_title(job: JobPosting) -> bool:
+    title_tokens = content_tokens(
+        " ".join(filter(None, [job.title, job.normalized_title]))
+    )
+    if not title_tokens & {"engineer", "developer"}:
+        return False
+    return bool(title_tokens & NON_SOFTWARE_ENGINEER_TITLE_TOKENS)
 
 
 def is_non_tech_job(job: JobPosting) -> bool:
@@ -769,6 +844,19 @@ def is_relevant_semantic_match(
     if is_tech_query(query) and specific and is_misleading_engineer_listing(job, specific):
         return False
 
+    if is_tech_query(query) and specific:
+        if is_non_software_engineer_title(job):
+            return False
+        if is_software_tech_job(job) and not is_non_tech_job(job):
+            title_role = title_tokens & {"engineer", "developer", "programmer", "software"}
+            body_blob = (job.description_clean or "").lower()
+            if title_role:
+                if any(_term_in_text(term, body_blob) for term in specific):
+                    if semantic_score >= 0.36:
+                        return True
+                if semantic_score >= 0.44 and lexical_score >= 0.06:
+                    return True
+
     if is_tech_query(query):
         if title_hits or title_prefix_hits:
             if specific and not (specific & title_terms) and len(q_terms) >= 2:
@@ -840,6 +928,8 @@ def apply_relevance_with_fallback(
             for item in results
             if not is_domain_mismatch(query, item["job"])
             and not is_misleading_engineer_listing(item["job"], specific)
+            and not is_non_software_engineer_title(item["job"])
+            and is_software_tech_job(item["job"])
         ]
         if relaxed:
             return relaxed, True
@@ -849,6 +939,8 @@ def apply_relevance_with_fallback(
                 item
                 for item in results
                 if not is_domain_mismatch(query, item["job"])
+                and not is_non_software_engineer_title(item["job"])
+                and is_software_tech_job(item["job"])
                 and has_meaningful_stack_signal(item["job"], specific)
             ]
             if stack_matches:

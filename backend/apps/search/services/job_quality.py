@@ -164,6 +164,42 @@ def _prefilter_specific_terms(terms: set[str]) -> set[str]:
     return terms - _PREFILTER_GENERIC_ROLE_TERMS - _PREFILTER_GENERIC_BROAD_TERMS
 
 
+SEMANTIC_STACK_SCOPE_MIN_JOBS = 25
+
+SOFTWARE_SCOPE_TERMS = frozenset(
+    {
+        "software",
+        "developer",
+        "engineer",
+        "programmer",
+        "fullstack",
+        "computer",
+        "devops",
+        "cloud",
+        "web",
+        "backend",
+        "frontend",
+    }
+)
+
+
+def _queryset_meets_min_rows(queryset: QuerySet[JobPosting], minimum: int) -> bool:
+    if minimum <= 0:
+        return True
+    return (
+        len(list(queryset.values_list("id", flat=True)[: minimum + 1]))
+        >= minimum
+    )
+
+
+def semantic_retrieval_terms(terms: set[str]) -> set[str]:
+    """Widen tiny stack-only SQL scopes to software roles for vector retrieval."""
+    specific = _prefilter_specific_terms(terms)
+    if specific and len(terms) >= 2:
+        return set(specific) | SOFTWARE_SCOPE_TERMS
+    return terms
+
+
 def narrow_jobs_by_terms_broad(queryset: QuerySet[JobPosting], terms: set[str]) -> QuerySet[JobPosting]:
     """Match any query token (OR) — wider recall fallback."""
     if not terms:
@@ -193,3 +229,27 @@ def narrow_jobs_by_terms(queryset: QuerySet[JobPosting], terms: set[str]) -> Que
         return narrowed
 
     return narrow_jobs_by_terms_broad(queryset, terms)
+
+
+def narrow_jobs_for_semantic_search(
+    queryset: QuerySet[JobPosting],
+    terms: set[str],
+) -> QuerySet[JobPosting]:
+    """
+    SQL scope before pgvector.
+
+    Stack + role queries (backend engineer) AND on specific tokens first; when that
+    corpus is tiny on real data, widen to software-role OR terms so retrieval is not
+    limited to a dozen remotive rows that mention 'backend' in the body.
+    """
+    if not terms:
+        return queryset
+
+    specific = _prefilter_specific_terms(terms)
+    if specific and len(terms) >= 2:
+        narrowed = narrow_jobs_by_terms(queryset, terms)
+        if _queryset_meets_min_rows(narrowed, SEMANTIC_STACK_SCOPE_MIN_JOBS):
+            return narrowed
+        return narrow_jobs_by_terms_broad(queryset, semantic_retrieval_terms(terms))
+
+    return narrow_jobs_by_terms(queryset, terms)
