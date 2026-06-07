@@ -245,6 +245,19 @@ STRONG_ROLE_TERMS = frozenset(
     }
 )
 
+# Role nouns that alone are too broad when paired with a specific skill (e.g. backend + engineer).
+GENERIC_ROLE_TERMS = frozenset(
+    {
+        "engineer",
+        "developer",
+        "programmer",
+        "analyst",
+        "scientist",
+        "architect",
+        "software",
+    }
+)
+
 IT_CATEGORY_HINTS = (
     "information technology",
     "software",
@@ -439,6 +452,28 @@ def _job_text_blob(job: JobPosting) -> str:
     ).lower()
 
 
+def specific_query_terms(q_terms: set[str]) -> set[str]:
+    """Skill/stack terms that must appear on a job when present in the query."""
+    return q_terms - GENERIC_ROLE_TERMS - GENERIC_BROAD_TERMS
+
+
+def _job_matches_specific_terms(
+    job: JobPosting,
+    specific_terms: set[str],
+    *,
+    title_terms: set[str],
+    category_terms: set[str],
+    body_terms: set[str],
+) -> bool:
+    if not specific_terms:
+        return True
+    combined = title_terms | category_terms | body_terms
+    if specific_terms & combined:
+        return True
+    blob = _job_text_blob(job)
+    return any(term in blob for term in specific_terms)
+
+
 def is_domain_mismatch(query: str, job: JobPosting) -> bool:
     """Drop obvious cross-domain neighbors (e.g. truck driver for a Python query)."""
     q_terms = content_tokens(query)
@@ -472,13 +507,23 @@ def compute_lexical_score(query: str, job: JobPosting) -> float:
     body_overlap = len(q_tokens.intersection(body_tokens)) / len(q_tokens)
     category_overlap = len(q_tokens.intersection(category_tokens)) / len(q_tokens)
 
-    return min(
+    score = min(
         1.0,
         (0.50 * title_overlap)
         + (0.25 * norm_overlap)
         + (0.15 * body_overlap)
         + (0.10 * category_overlap),
     )
+
+    specific = specific_query_terms(q_tokens)
+    if specific:
+        job_tokens = title_tokens | norm_title_tokens | body_tokens | category_tokens
+        if not (specific & job_tokens):
+            score *= 0.35
+        elif not (specific & (title_tokens | norm_title_tokens)):
+            score *= 0.65
+
+    return score
 
 
 def compute_hybrid_score(*, semantic_score: float, lexical_score: float) -> float:
@@ -547,9 +592,24 @@ def is_relevant_semantic_match(
     category_prefix_hits = _prefix_overlap(q_terms, category_terms)
     body_prefix_hits = _prefix_overlap(q_terms, body_terms)
 
+    specific = specific_query_terms(q_terms)
+    if is_tech_query(query) and specific:
+        if not _job_matches_specific_terms(
+            job,
+            specific,
+            title_terms=title_terms,
+            category_terms=category_terms,
+            body_terms=body_terms,
+        ):
+            return False
+
     if is_tech_query(query):
         if title_hits or title_prefix_hits:
-            return True
+            if specific and not (specific & title_terms) and len(q_terms) >= 2:
+                # e.g. "backend engineer" vs "Staff Software Engineer" — engineer alone is not enough
+                pass
+            else:
+                return True
         if (category_hits or category_prefix_hits) and any(hint in category_blob for hint in IT_CATEGORY_HINTS):
             return True
         if len(q_terms) == 1:

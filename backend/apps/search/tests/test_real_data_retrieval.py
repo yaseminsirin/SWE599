@@ -13,6 +13,7 @@ from apps.search.services.retrieval_rerank import (
     prefilter_terms,
     rerank_semantic_candidates,
     retrieval_query_text,
+    specific_query_terms,
 )
 from apps.search.services.job_quality import narrow_jobs_by_terms
 from apps.search.services.semantic_search import semantic_search_jobs
@@ -57,6 +58,58 @@ class RealDataRetrievalTests(TestCase):
     def test_quality_and_tech_heuristics(self):
         self.assertTrue(is_quality_job(self.real_job))
         self.assertTrue(is_tech_related_job(self.real_job))
+
+    def test_backend_engineer_specific_term_excludes_staff_product_engineer(self):
+        staff_product = JobPosting.objects.create(
+            source="remotive",
+            source_job_id="staff-product-1",
+            title="Staff Product Engineer",
+            normalized_title="staff product engineer",
+            company_name="LawnStarter",
+            description_clean=(
+                "Lead product engineering initiatives across cross-functional teams. "
+                "Define roadmap, run discovery, and ship customer-facing features."
+            ),
+            category_normalized="Product Management",
+            job_url="https://example.com/staff-product",
+            content_hash="staff-product-hash",
+            posted_at=timezone.now(),
+        )
+        backend_job = JobPosting.objects.create(
+            source="remotive",
+            source_job_id="backend-eng-1",
+            title="Backend Engineer",
+            normalized_title="backend engineer",
+            company_name="Tech Co",
+            description_clean=(
+                "Build backend APIs, database schemas, and scalable services with Python. "
+                "Design REST endpoints and deploy cloud-native applications."
+            ),
+            category_normalized="Software Development",
+            job_url="https://example.com/backend-eng",
+            content_hash="backend-eng-hash",
+            posted_at=timezone.now(),
+        )
+        query = "backend engineer"
+        self.assertEqual(specific_query_terms(prefilter_terms(query)), {"backend"})
+        self.assertFalse(
+            is_relevant_semantic_match(
+                query,
+                staff_product,
+                hybrid_score=0.55,
+                lexical_score=compute_lexical_score(query, staff_product),
+                semantic_score=0.62,
+            )
+        )
+        candidates = [
+            {"job": staff_product, "semantic_score": 0.62},
+            {"job": backend_job, "semantic_score": 0.58},
+        ]
+        reranked = rerank_semantic_candidates(query, candidates)
+        self.assertEqual(reranked[0]["job"].id, backend_job.id)
+        filtered = filter_relevant_semantic_results(query, reranked)
+        self.assertEqual(len(filtered), 1)
+        self.assertEqual(filtered[0]["job"].id, backend_job.id)
 
     def test_hybrid_rerank_prefers_title_overlap(self):
         other = JobPosting.objects.create(
