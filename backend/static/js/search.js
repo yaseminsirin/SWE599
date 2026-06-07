@@ -11,77 +11,6 @@
     return div.innerHTML;
   }
 
-  function sanitizeJobDescriptionHtml(html) {
-    if (!html || typeof html !== "string") return "";
-    var parser = new DOMParser();
-    var doc = parser.parseFromString(html, "text/html");
-    var forbidden = {
-      SCRIPT: 1,
-      STYLE: 1,
-      IFRAME: 1,
-      OBJECT: 1,
-      EMBED: 1,
-      FORM: 1,
-      INPUT: 1,
-      BUTTON: 1,
-      SELECT: 1,
-      TEXTAREA: 1,
-      LINK: 1,
-      META: 1,
-      BASE: 1,
-      SVG: 1,
-      MATH: 1,
-    };
-
-    function stripDangerousAttrs(el) {
-      var tag = el.tagName;
-      var removeNames = [];
-      var i;
-      var attr;
-      var n;
-      var v;
-      for (i = 0; i < el.attributes.length; i++) {
-        attr = el.attributes[i];
-        n = attr.name.toLowerCase();
-        v = attr.value;
-        if (n.startsWith("on")) removeNames.push(attr.name);
-        else if (n === "style" || n === "id") removeNames.push(attr.name);
-        else if ((n === "href" || n === "src" || n === "xlink:href") && tag !== "A") removeNames.push(attr.name);
-        else if (n === "src" || n === "srcset" || n === "poster") removeNames.push(attr.name);
-        else if (tag === "A" && n === "href") {
-          if (/^\s*javascript:/i.test(v) || /^\s*data:/i.test(v) || /^\s*vbscript:/i.test(v))
-            removeNames.push(attr.name);
-        }
-      }
-      for (i = 0; i < removeNames.length; i++) el.removeAttribute(removeNames[i]);
-      if (tag === "A" && el.getAttribute("href")) {
-        if (!el.getAttribute("rel")) el.setAttribute("rel", "noopener noreferrer");
-        if (!el.getAttribute("target")) el.setAttribute("target", "_blank");
-      }
-    }
-
-    function walk(node) {
-      var child = node.firstChild;
-      while (child) {
-        var next = child.nextSibling;
-        if (child.nodeType === 1) {
-          if (forbidden[child.tagName]) {
-            child.remove();
-          } else {
-            stripDangerousAttrs(child);
-            walk(child);
-          }
-        } else if (child.nodeType === 8) {
-          child.remove();
-        }
-        child = next;
-      }
-    }
-
-    walk(doc.body);
-    return doc.body.innerHTML;
-  }
-
   function buildJobBadges(job) {
     var parts = [];
 
@@ -133,8 +62,7 @@
         var title = escapeHtml(job.title || "");
         var company = escapeHtml(job.company_name || "");
         var loc = escapeHtml(job.location_display || job.location_text || "");
-        var desc = job.description_clean || "";
-        var snippet = sanitizeJobDescriptionHtml(desc);
+        var snippet = escapeHtml(job.description_snippet || "");
         var url = job.job_url || "#";
         var badges = buildJobBadges(job);
         return (
@@ -148,9 +76,7 @@
           loc +
           "</p>" +
           (badges ? '<div class="job-card__badges">' + badges + "</div>" : "") +
-          '<div class="job-card__snippet job-card__snippet--html">' +
-          snippet +
-          "</div>" +
+          (snippet ? '<p class="job-card__snippet">' + snippet + "</p>" : "") +
           '<a class="btn btn--primary btn--sm" href="' +
           escapeHtml(url) +
           '" target="_blank" rel="noopener noreferrer">View job</a>' +
@@ -221,6 +147,20 @@
       "</span></div>";
     var nav = document.getElementById("jobPagination");
     if (nav) nav.hidden = true;
+  }
+
+  function showIdleState() {
+    var root = document.getElementById("jobResults");
+    if (!root) return;
+    root.innerHTML =
+      '<div class="empty-state" id="searchIdle"><strong>Ready to search</strong><span>Enter a query above and press Search Jobs.</span></div>';
+    var nav = document.getElementById("jobPagination");
+    if (nav) {
+      nav.hidden = true;
+      nav.innerHTML = "";
+    }
+    var statusEl = document.getElementById("searchStatus");
+    if (statusEl) statusEl.textContent = "";
   }
 
   function getSearchValues() {
@@ -304,6 +244,12 @@
       var statusEl = document.getElementById("searchStatus");
       var req = buildRequest(page);
 
+      if (req.mode === "browse") {
+        showIdleState();
+        if (statusEl) statusEl.textContent = "Enter a search query to run semantic search.";
+        return;
+      }
+
       showLoading(req.mode);
       try {
         var resp = await window.apiFetch(req.endpoint + "?" + req.params.toString());
@@ -322,11 +268,7 @@
         renderJobs(results);
         renderPagination(page, total);
         if (statusEl) {
-          if (req.mode === "search") {
-            statusEl.textContent = total + " semantically matched job" + (total === 1 ? "" : "s") + ".";
-          } else {
-            statusEl.textContent = total + " job listing" + (total === 1 ? "" : "s") + " (newest first).";
-          }
+          statusEl.textContent = total + " semantically matched job" + (total === 1 ? "" : "s") + ".";
         }
       } catch (err) {
         document.getElementById("jobResults").innerHTML =
@@ -388,7 +330,7 @@
       });
     }
 
-    loadJobs(1);
+    showIdleState();
   }
 
   document.addEventListener("DOMContentLoaded", init);

@@ -1,6 +1,11 @@
+import re
+
+from django.utils.html import strip_tags
 from rest_framework import serializers
 
 from apps.jobs.models import JobPosting
+
+LIST_DESCRIPTION_SNIPPET_MAX = 280
 from apps.jobs.services.job_labels import (
     category_label_from_raw,
     employment_label_from_raw,
@@ -23,6 +28,7 @@ class JobPostingSerializer(serializers.ModelSerializer):
     salary_display = serializers.SerializerMethodField()
     remote_label = serializers.SerializerMethodField()
     category_label = serializers.SerializerMethodField()
+    description_snippet = serializers.SerializerMethodField()
 
     class Meta:
         model = JobPosting
@@ -40,7 +46,7 @@ class JobPostingSerializer(serializers.ModelSerializer):
             "remote_label",
             "employment_type",
             "employment_type_label",
-            "description_clean",
+            "description_snippet",
             "job_url",
             "posted_at",
             "salary_min",
@@ -105,10 +111,19 @@ class JobPostingSerializer(serializers.ModelSerializer):
             obj.category_normalized
         )
 
+    def get_description_snippet(self, obj: JobPosting) -> str:
+        raw = obj.description_clean or obj.description_raw or ""
+        text = strip_tags(raw)
+        text = re.sub(r"\s+", " ", text).strip()
+        if len(text) <= LIST_DESCRIPTION_SNIPPET_MAX:
+            return text
+        return text[: LIST_DESCRIPTION_SNIPPET_MAX - 3].rstrip() + "..."
+
 
 class JobPostingDetailSerializer(JobPostingSerializer):
     class Meta(JobPostingSerializer.Meta):
         fields = JobPostingSerializer.Meta.fields + [
+            "description_clean",
             "source_job_id",
             "normalized_title",
             "expires_at",

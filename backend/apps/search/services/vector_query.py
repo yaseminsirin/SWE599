@@ -33,6 +33,9 @@ def with_hnsw_ef_search(ef_search: int | None = None):
         yield
         return
     value = ef_search or int(getattr(settings, "SEMANTIC_SEARCH_HNSW_EF_SEARCH", 40))
-    with connection.cursor() as cursor:
-        cursor.execute("SET LOCAL hnsw.ef_search = %s", [value])
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("SET LOCAL hnsw.ef_search = %s", [value])
+    except Exception:
+        pass
     yield
