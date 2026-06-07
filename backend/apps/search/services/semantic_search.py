@@ -308,6 +308,7 @@ def semantic_search_jobs(
     *,
     top_k: int = 20,
     tech_only: bool | None = None,
+    return_reranked_pool: bool = False,
 ) -> list[dict[str, Any]]:
     """
     pgvector retrieval with optional query-term prefilter (short queries only),
@@ -445,6 +446,9 @@ def semantic_search_jobs(
         ]
 
     reranked = rerank_semantic_candidates(query, candidates)
+    if return_reranked_pool:
+        return reranked[:top_k]
+
     relevant, used_fallback = apply_relevance_with_fallback(query, reranked)
 
     logger.info(
