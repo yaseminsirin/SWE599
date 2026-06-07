@@ -44,7 +44,7 @@ class SemanticJobSearchAPIView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        top_k = int(request.query_params.get("top_k", 50))
+        top_k = min(int(request.query_params.get("top_k", 20)), 50)
         tech_only = request.query_params.get("tech_only", "").strip().lower()
         if tech_only in {"1", "true", "yes"}:
             tech_filter = True

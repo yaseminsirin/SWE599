@@ -1,9 +1,11 @@
 import logging
+import time
 from collections import OrderedDict
 from typing import Any
 
 from django.conf import settings
-from django.db.models import QuerySet
+from django.db.models import Q, QuerySet
+from django.db.models.functions import Length
 
 from apps.jobs.models import JobPosting
 from apps.search.models import JobEmbedding
@@ -11,11 +13,19 @@ from apps.search.models import JobEmbedding
 from .embeddings.factory import (
     EmbeddingProviderError,
     embed_text_with_metadata,
+    get_embedding_provider,
     is_embedding_strict_mode,
     log_embedding_usage,
 )
 from .embeddings.types import EmbeddingResult
-from .job_quality import get_searchable_job_queryset, is_quality_job, narrow_jobs_by_terms
+from .job_quality import (
+    EXCLUDED_SEARCH_SOURCES,
+    REAL_JOB_SOURCES,
+    TECH_SIGNAL_TERMS,
+    get_searchable_job_queryset,
+    is_quality_job,
+    narrow_jobs_by_terms,
+)
 from .retrieval_rerank import (
     apply_relevance_with_fallback,
     is_natural_language_query,
@@ -24,28 +34,57 @@ from .retrieval_rerank import (
     retrieval_query_text,
     should_skip_pgvector_prefilter,
 )
-from .vector_query import cosine_distance_annotation, semantic_score_from_row
+from .vector_query import cosine_distance_annotation, semantic_score_from_row, with_hnsw_ef_search
 
 logger = logging.getLogger(__name__)
 
 _QUERY_EMBED_CACHE: OrderedDict[str, EmbeddingResult] = OrderedDict()
 _QUERY_EMBED_CACHE_MAX = 128
 
+_SCOPE_IDS_CACHE: dict[tuple[Any, ...], tuple[float, frozenset[int]]] = {}
+_SCOPE_IDS_CACHE_TTL = 300.0
+_SCOPE_IDS_CACHE_MAX = 32
+
+_JOB_HYDRATE_FIELDS = (
+    "id",
+    "source",
+    "title",
+    "normalized_title",
+    "company_name",
+    "description_clean",
+    "description_raw",
+    "category_normalized",
+    "category_raw",
+    "job_url",
+    "expires_at",
+    "posted_at",
+    "created_at",
+    "location_text",
+    "city",
+    "country",
+    "is_remote",
+    "employment_type",
+    "salary_min",
+    "salary_max",
+    "salary_currency",
+    "salary_period",
+)
+
 
 def _query_prefilter_terms(query: str) -> set[str]:
     return prefilter_terms(query)
 
 
-def _pgvector_scan_limit(pool_size: int) -> int:
-    """
-    Fetch more than pool_size pgvector neighbors so we can skip low-quality rows.
+def _pgvector_scan_limit(pool_size: int, *, narrowed_size: int | None = None) -> int:
+    multiplier = int(getattr(settings, "SEMANTIC_SEARCH_SCAN_MULTIPLIER", 10))
+    floor = int(getattr(settings, "SEMANTIC_SEARCH_SCAN_FLOOR", 120))
+    cap = int(getattr(settings, "SEMANTIC_SEARCH_SCAN_CAP", 600))
 
-    On production USAJOBS-heavy indexes, the nearest vectors are often short/noisy
-    postings that fail is_quality_job; scanning only pool_size rows yields zero results.
-    """
-    multiplier = int(getattr(settings, "SEMANTIC_SEARCH_SCAN_MULTIPLIER", 15))
-    floor = int(getattr(settings, "SEMANTIC_SEARCH_SCAN_FLOOR", 300))
-    cap = int(getattr(settings, "SEMANTIC_SEARCH_SCAN_CAP", 1500))
+    if narrowed_size is not None and narrowed_size > 0:
+        # Tight prefilter — scan a small multiple of the narrowed corpus.
+        narrowed_cap = int(getattr(settings, "SEMANTIC_SEARCH_NARROWED_SCAN_CAP", 250))
+        return min(max(pool_size * 3, min(narrowed_size * 4, narrowed_cap)), narrowed_cap)
+
     return min(max(pool_size * max(multiplier, 1), floor), cap)
 
 
@@ -53,13 +92,59 @@ def _large_corpus_threshold() -> int:
     return int(getattr(settings, "SEMANTIC_SEARCH_INDEX_FIRST_MIN_SCOPE", 6000))
 
 
-def _materialize_job_ids(job_scope: QuerySet[JobPosting]) -> set[int]:
-    """One-shot ID set — avoids repeating slow job__in subqueries on every pgvector call."""
-    return set(job_scope.values_list("id", flat=True))
+def _scope_cache_key(job_scope: QuerySet[JobPosting]) -> tuple[Any, ...]:
+    return ("scope", job_scope.query)
+
+
+def _materialize_job_ids(job_scope: QuerySet[JobPosting]) -> frozenset[int]:
+    """Cache narrowed scope IDs briefly — prefilter iregex queries are expensive."""
+    cache_key = _scope_cache_key(job_scope)
+    now = time.monotonic()
+    cached = _SCOPE_IDS_CACHE.get(cache_key)
+    if cached and (now - cached[0]) < _SCOPE_IDS_CACHE_TTL:
+        return cached[1]
+
+    ids = frozenset(job_scope.values_list("id", flat=True))
+    _SCOPE_IDS_CACHE[cache_key] = (now, ids)
+    while len(_SCOPE_IDS_CACHE) > _SCOPE_IDS_CACHE_MAX:
+        _SCOPE_IDS_CACHE.pop(next(iter(_SCOPE_IDS_CACHE)))
+    return ids
+
+
+def _embedding_scope_queryset(
+    *,
+    index_provider: str,
+    index_model: str,
+    tech_only: bool | None,
+) -> QuerySet[JobEmbedding]:
+    """SQL join filters for the searchable corpus — avoids materializing 10k+ IDs per request."""
+    queryset = JobEmbedding.objects.filter(
+        provider=index_provider,
+        model_name=index_model,
+        job__source__in=REAL_JOB_SOURCES,
+    ).exclude(job__source__in=EXCLUDED_SEARCH_SOURCES)
+
+    if tech_only is None:
+        tech_only = getattr(settings, "SEMANTIC_TECH_ONLY", True)
+    if tech_only:
+        tech_q = Q()
+        for term in TECH_SIGNAL_TERMS:
+            tech_q |= Q(job__title__icontains=term)
+            tech_q |= Q(job__normalized_title__icontains=term)
+            tech_q |= Q(job__description_clean__icontains=term)
+            tech_q |= Q(job__category_normalized__icontains=term)
+        queryset = queryset.filter(tech_q)
+
+    return queryset.annotate(
+        job_desc_len=Length("job__description_clean"),
+    ).filter(
+        job_desc_len__gte=80,
+    ).exclude(
+        job__job_url__icontains="example.invalid",
+    )
 
 
 def _embed_query_cached(retrieval_text: str) -> EmbeddingResult:
-    """Cache query embeddings; only the query is embedded per search, never job postings."""
     cached = _QUERY_EMBED_CACHE.get(retrieval_text)
     if cached is not None:
         _QUERY_EMBED_CACHE.move_to_end(retrieval_text)
@@ -73,46 +158,50 @@ def _embed_query_cached(retrieval_text: str) -> EmbeddingResult:
     return result
 
 
-def _pgvector_rows(
+def _pgvector_neighbor_rows(
     *,
+    queryset: QuerySet[JobEmbedding],
     query_vector: list[float],
-    index_provider: str,
-    index_model: str,
     scan_limit: int,
-    job_ids: set[int] | None = None,
-) -> list[JobEmbedding]:
+    job_ids: frozenset[int] | None = None,
+) -> list[dict[str, Any]]:
     """
-    Nearest-neighbor fetch using the HNSW index.
-
-    When job_ids is None or larger than the index-first threshold, filter only by
-    provider/model so PostgreSQL can use the vector index. Otherwise use a
-    materialized job_id__in list (faster than a correlated job__in subquery).
+    Lightweight ANN: fetch only job_id + distance (no job row hydration).
     """
-    queryset = JobEmbedding.objects.filter(
-        provider=index_provider,
-        model_name=index_model,
-    )
     use_index_first = job_ids is None or len(job_ids) >= _large_corpus_threshold()
+    scoped = queryset
     if not use_index_first and job_ids:
-        queryset = queryset.filter(job_id__in=job_ids)
+        scoped = scoped.filter(job_id__in=job_ids)
 
-    return list(
-        queryset.annotate(**cosine_distance_annotation(query_vector))
-        .select_related("job")
-        .order_by("distance")[:scan_limit]
-    )
+    with with_hnsw_ef_search():
+        return list(
+            scoped.annotate(**cosine_distance_annotation(query_vector))
+            .order_by("distance")
+            .values("job_id", "distance")[:scan_limit]
+        )
+
+
+def _hydrate_jobs(job_ids: list[int]) -> dict[int, JobPosting]:
+    if not job_ids:
+        return {}
+    rows = JobPosting.objects.filter(id__in=job_ids).only(*_JOB_HYDRATE_FIELDS)
+    return {job.id: job for job in rows}
 
 
 def _collect_candidates(
-    rows: list[JobEmbedding],
+    neighbor_rows: list[dict[str, Any]],
     *,
-    allowed_ids: set[int],
+    allowed_ids: frozenset[int] | None,
     pool_size: int,
+    jobs_by_id: dict[int, JobPosting],
 ) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
-    for row in rows:
-        job = row.job
-        if job.id not in allowed_ids or not is_quality_job(job):
+    for row in neighbor_rows:
+        job_id = int(row["job_id"])
+        if allowed_ids is not None and job_id not in allowed_ids:
+            continue
+        job = jobs_by_id.get(job_id)
+        if job is None or not is_quality_job(job):
             continue
         candidates.append(
             {
@@ -127,42 +216,81 @@ def _collect_candidates(
 
 def _pgvector_candidates(
     *,
+    scope_queryset: QuerySet[JobEmbedding],
     query_vector: list[float],
-    index_provider: str,
-    index_model: str,
-    allowed_ids: set[int],
+    allowed_ids: frozenset[int] | None,
     pool_size: int,
     scan_limit: int,
-    prefer_ids: set[int] | None = None,
+    prefer_ids: frozenset[int] | None = None,
 ) -> list[dict[str, Any]]:
-    """
-    Retrieve semantic neighbors for a materialized job scope.
-
-    When prefer_ids is a strict subset of allowed_ids, one pgvector round-trip tries
-    the preferred scope first, then falls back to the wider allowed_ids on the same rows.
-    """
-    if not allowed_ids:
-        return []
-
     use_prefer_fallback = (
         prefer_ids is not None and prefer_ids and prefer_ids != allowed_ids
     )
-    search_ids = allowed_ids if use_prefer_fallback else (prefer_ids or allowed_ids)
+    threshold = _large_corpus_threshold()
+    if use_prefer_fallback:
+        search_ids = None
+    elif prefer_ids and len(prefer_ids) < threshold:
+        search_ids = prefer_ids
+    elif allowed_ids is not None and len(allowed_ids) < threshold:
+        search_ids = allowed_ids
+    else:
+        search_ids = None
 
-    rows = _pgvector_rows(
+    neighbor_rows = _pgvector_neighbor_rows(
+        queryset=scope_queryset,
         query_vector=query_vector,
-        index_provider=index_provider,
-        index_model=index_model,
         scan_limit=scan_limit,
         job_ids=search_ids,
     )
+    if not neighbor_rows:
+        return []
+
+    hydrate_order: list[int] = []
+    seen: set[int] = set()
+    for row in neighbor_rows:
+        job_id = int(row["job_id"])
+        if job_id in seen:
+            continue
+        seen.add(job_id)
+        hydrate_order.append(job_id)
+        if len(hydrate_order) >= scan_limit:
+            break
+
+    jobs_by_id = _hydrate_jobs(hydrate_order)
 
     if use_prefer_fallback:
-        candidates = _collect_candidates(rows, allowed_ids=prefer_ids, pool_size=pool_size)
+        candidates = _collect_candidates(
+            neighbor_rows,
+            allowed_ids=prefer_ids,
+            pool_size=pool_size,
+            jobs_by_id=jobs_by_id,
+        )
         if candidates:
             return candidates
+        return _collect_candidates(
+            neighbor_rows,
+            allowed_ids=allowed_ids,
+            pool_size=pool_size,
+            jobs_by_id=jobs_by_id,
+        )
 
-    return _collect_candidates(rows, allowed_ids=allowed_ids, pool_size=pool_size)
+    return _collect_candidates(
+        neighbor_rows,
+        allowed_ids=allowed_ids,
+        pool_size=pool_size,
+        jobs_by_id=jobs_by_id,
+    )
+
+
+def warmup_embedding_model() -> None:
+    """Load sentence-transformers once at process start (avoids multi-second first search)."""
+    try:
+        provider = get_embedding_provider()
+        if hasattr(provider, "_encode"):
+            provider._encode(["search warmup"])
+            logger.info("embedding_model_warmup_ok provider=%s", provider.provider_name)
+    except Exception as exc:
+        logger.warning("embedding_model_warmup_failed error=%s", exc)
 
 
 def semantic_search_jobs(
@@ -200,53 +328,51 @@ def semantic_search_jobs(
     index_provider = embed_result.provider_name
     index_model = embed_result.model_name
 
-    base_qs = get_searchable_job_queryset(
-        real_sources_only=True,
-        exclude_demo=True,
+    scope_queryset = _embedding_scope_queryset(
+        index_provider=index_provider,
+        index_model=index_model,
         tech_only=tech_only,
     )
-    pool_size = int(getattr(settings, "SEMANTIC_SEARCH_CANDIDATE_POOL", 200))
-    scan_limit = _pgvector_scan_limit(pool_size)
-    base_ids = _materialize_job_ids(base_qs)
+    pool_size = min(
+        int(getattr(settings, "SEMANTIC_SEARCH_CANDIDATE_POOL", 100)),
+        max(top_k * 2, top_k),
+    )
 
     skip_prefilter = should_skip_pgvector_prefilter(query)
-    narrowed_ids: set[int] | None = None
+    narrowed_ids: frozenset[int] | None = None
     if not skip_prefilter:
+        base_qs = get_searchable_job_queryset(
+            real_sources_only=True,
+            exclude_demo=True,
+            tech_only=tech_only,
+        )
         narrowed_qs = narrow_jobs_by_terms(base_qs, terms) if terms else base_qs
         narrowed_ids = _materialize_job_ids(narrowed_qs)
+
+    scan_limit = _pgvector_scan_limit(
+        pool_size,
+        narrowed_size=len(narrowed_ids) if narrowed_ids is not None else None,
+    )
 
     candidates: list[dict[str, Any]] = []
     scope_size = 0
 
     if skip_prefilter:
-        scope_size = len(base_ids)
+        scope_size = -1  # join-scoped corpus; no ID materialization
         candidates = _pgvector_candidates(
+            scope_queryset=scope_queryset,
             query_vector=query_vector,
-            index_provider=index_provider,
-            index_model=index_model,
-            allowed_ids=base_ids,
+            allowed_ids=None,
             pool_size=pool_size,
             scan_limit=scan_limit,
         )
     elif narrowed_ids is not None:
         scope_size = len(narrowed_ids)
         candidates = _pgvector_candidates(
+            scope_queryset=scope_queryset,
             query_vector=query_vector,
-            index_provider=index_provider,
-            index_model=index_model,
-            allowed_ids=base_ids,
+            allowed_ids=None,
             prefer_ids=narrowed_ids,
-            pool_size=pool_size,
-            scan_limit=scan_limit,
-        )
-
-    if not candidates and terms and not skip_prefilter and narrowed_ids is not None:
-        scope_size = len(base_ids)
-        candidates = _pgvector_candidates(
-            query_vector=query_vector,
-            index_provider=index_provider,
-            index_model=index_model,
-            allowed_ids=base_ids,
             pool_size=pool_size,
             scan_limit=scan_limit,
         )
@@ -257,12 +383,17 @@ def semantic_search_jobs(
             "retrying with query-term prefilter terms=%s",
             sorted(terms),
         )
+        base_qs = get_searchable_job_queryset(
+            real_sources_only=True,
+            exclude_demo=True,
+            tech_only=tech_only,
+        )
         term_ids = _materialize_job_ids(narrow_jobs_by_terms(base_qs, terms))
         scope_size = len(term_ids)
+        scan_limit = _pgvector_scan_limit(pool_size, narrowed_size=len(term_ids))
         candidates = _pgvector_candidates(
+            scope_queryset=scope_queryset,
             query_vector=query_vector,
-            index_provider=index_provider,
-            index_model=index_model,
             allowed_ids=term_ids,
             pool_size=pool_size,
             scan_limit=scan_limit,
