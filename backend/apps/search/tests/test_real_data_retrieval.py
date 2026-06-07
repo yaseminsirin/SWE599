@@ -415,7 +415,10 @@ class RealDataRetrievalTests(TestCase):
         self.assertIn("developer", compact)
         self.assertLess(len(compact.split()), len(long_query.split()))
         self.assertEqual(retrieval_query_text("python developer"), "python developer")
-        self.assertEqual(retrieval_query_text("backend engineer"), "backend engineer")
+        self.assertEqual(
+            retrieval_query_text("backend engineer"),
+            "backend developer software engineer",
+        )
 
     def test_clerk_and_psychiatrist_rejected_for_python_long_query(self):
         clerk_job = JobPosting.objects.create(
